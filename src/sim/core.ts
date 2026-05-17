@@ -1,11 +1,24 @@
-import { SimState, Snapshot, SimGraph, SimNode, NodeType, edgeKey } from './types';
+import {
+  SimState,
+  Snapshot,
+  SimGraph,
+  SimNode,
+  NodeType,
+  Table,
+  edgeKey
+} from './types';
 import {
   NODE_SPECS,
-  REDIS_HIT_RATE,
+  LEGACY_DEFAULT_HIT_RATE,
   TIER_MULTIPLIERS,
   DEFAULT_REPLICATION_LAG_MS,
   DEFAULT_READ_KEY_CARDINALITY,
-  CDN_DEFAULT_HIT_RATE
+  CDN_DEFAULT_HIT_RATE,
+  QUERY_COSTS,
+  DEFAULT_READ_QUERY_COST_MS,
+  DEFAULT_WRITE_QUERY_COST_MS,
+  REDIS_TIER_MEMORY_BYTES,
+  derivedHitRate
 } from './specs';
 import {
   computeEffects,
@@ -41,7 +54,7 @@ function workerCapTotal(
     if (!node || node.type !== 'worker') continue;
     const instances = Math.max(1, node.instanceCount ?? 1);
     const tierMult = TIER_MULTIPLIERS[node.tier ?? 'S'];
-    total += NODE_SPECS.worker.capacity * tierMult.cap * instances;
+    total += (NODE_SPECS.worker.capacity ?? 0) * tierMult.cap * instances;
   }
   return total;
 }
@@ -52,7 +65,8 @@ function resolveFlow(
   writeRps: number,
   effects: IncidentEffects,
   prevDepths: Record<string, number>,
-  dtMs: number
+  dtMs: number,
+  redisHitRateByNodeId: Record<string, number>
 ): FlowResult {
   const adjacency: Record<string, string[]> = {};
   for (const e of graph.edges) {
@@ -97,7 +111,8 @@ function resolveFlow(
     let forwardWrites = w;
 
     if (typeOf[id] === 'redis') {
-      const hitRate = effects.hitRateOverrideByType.redis ?? REDIS_HIT_RATE;
+      const baseHit = redisHitRateByNodeId[id] ?? LEGACY_DEFAULT_HIT_RATE;
+      const hitRate = effects.hitRateOverrideByType.redis ?? baseHit;
       forwardReads = r * (1 - hitRate);
     }
 
@@ -114,7 +129,7 @@ function resolveFlow(
       const workerTargets = downstream.filter((t) => typeOf[t] === 'worker');
       const drainCap = workerCapTotal(workerTargets, nodeById);
       const prevDepth = prevDepths[id] ?? 0;
-      const cap = NODE_SPECS.queue.capacity;
+      const cap = NODE_SPECS.queue.capacity ?? Infinity;
       const dtSec = dtMs / 1000;
 
       let newDepth = prevDepth;
@@ -204,6 +219,160 @@ interface PerNodeResult {
   perNodeIncomingRps: Record<string, number>;
   flow: FlowResult;
   apiErrorRateMax: number;
+  cacheStaleReadPct: number;
+}
+
+interface QueryCostMix {
+  read: number;
+  write: number;
+}
+
+// If byColumn is declared and not indexed, an Indexed query falls back to its
+// Scan equivalent. This is what makes "add/remove an index" a meaningful lever.
+function effectiveQueryType(
+  declared: import('./types').QueryType,
+  table: Table | undefined,
+  byColumn: string | undefined
+): import('./types').QueryType {
+  if (!byColumn || !table) return declared;
+  const col = table.columns.find((c) => c.name === byColumn);
+  if (!col || col.indexed) return declared;
+  if (declared === 'pointIndexed') return 'pointScan';
+  if (declared === 'rangeIndexed') return 'rangeScan';
+  return declared;
+}
+
+function avgQueryCostMix(state: SimState): QueryCostMix {
+  const endpoints = state.endpoints ?? [];
+  if (endpoints.length === 0) {
+    return { read: DEFAULT_READ_QUERY_COST_MS, write: DEFAULT_WRITE_QUERY_COST_MS };
+  }
+  const tables: Record<string, Table | undefined> = {};
+  for (const t of state.tables ?? []) tables[t.name] = t;
+
+  let rW = 0;
+  let rC = 0;
+  let wW = 0;
+  let wC = 0;
+  for (const e of endpoints) {
+    const table = tables[e.table];
+    const type = effectiveQueryType(e.query.type, table, e.query.byColumn);
+    const cost = QUERY_COSTS[type](table, e.responseSize);
+    if (type === 'write') {
+      wW += e.weight;
+      wC += e.weight * cost;
+    } else {
+      rW += e.weight;
+      rC += e.weight * cost;
+    }
+  }
+  return {
+    read: rW > 0 ? rC / rW : DEFAULT_READ_QUERY_COST_MS,
+    write: wW > 0 ? wC / wW : DEFAULT_WRITE_QUERY_COST_MS
+  };
+}
+
+const DEFAULT_CACHE_TTL_SECONDS = 60;
+const DEFAULT_CACHE_MODE: 'invalidate' | 'ttl' = 'invalidate';
+
+interface CacheImpact {
+  hitRateByRedisNodeId: Record<string, number>;
+  cacheStaleReadPct: number;
+}
+
+function computeCacheImpact(
+  state: SimState,
+  totalReadRps: number,
+  totalWriteRps: number
+): CacheImpact {
+  const endpoints = state.endpoints ?? [];
+  const hitRateByRedisNodeId: Record<string, number> = {};
+  if (endpoints.length === 0) return { hitRateByRedisNodeId, cacheStaleReadPct: 0 };
+
+  const tables: Record<string, Table | undefined> = {};
+  for (const t of state.tables ?? []) tables[t.name] = t;
+
+  // Per-endpoint write RPS, computed from weights among write-typed endpoints.
+  const writeEndpointTotalWeight = endpoints
+    .filter((e) => e.query.type === 'write')
+    .reduce((s, e) => s + e.weight, 0);
+  const writeRpsPerTable: Record<string, number> = {};
+  for (const e of endpoints) {
+    if (e.query.type !== 'write' || writeEndpointTotalWeight === 0) continue;
+    const rps = totalWriteRps * (e.weight / writeEndpointTotalWeight);
+    writeRpsPerTable[e.table] = (writeRpsPerTable[e.table] ?? 0) + rps;
+  }
+
+  // Per-endpoint read RPS, computed from weights among read-typed endpoints.
+  const readEndpointTotalWeight = endpoints
+    .filter((e) => e.query.type !== 'write')
+    .reduce((s, e) => s + e.weight, 0);
+
+  let totalStaleReads = 0;
+  let totalReads = 0;
+
+  for (const node of state.graph.nodes) {
+    if (node.type !== 'redis') continue;
+    const tier = node.tier ?? 'S';
+    const instances = Math.max(1, node.instanceCount ?? 1);
+    const cacheBytes = REDIS_TIER_MEMORY_BYTES[tier] * instances;
+
+    let totalReadWeight = 0;
+    let weightedEffectiveHit = 0;
+
+    for (const e of endpoints) {
+      if (e.query.type === 'write') continue;
+      const table = tables[e.table];
+      const workingSet = table ? table.rowCount * table.avgRowSize : 0;
+      const baseHit = derivedHitRate(workingSet, cacheBytes, e.skew);
+
+      const mode = e.cache?.mode ?? DEFAULT_CACHE_MODE;
+      const ttlSec = e.cache?.ttlSeconds ?? DEFAULT_CACHE_TTL_SECONDS;
+      const cardinality = e.cache?.cardinality ?? table?.rowCount ?? 1;
+      const writeRpsForTable = writeRpsPerTable[e.table] ?? 0;
+
+      let effectiveHit = baseHit;
+
+      if (mode === 'invalidate' && writeRpsForTable > 0) {
+        // Each write invalidates ~1 key per RPS. Within the warming window,
+        // the fraction of the cache invalidated per second ≈ writeRps / N.
+        const invalidationRate = Math.min(1, writeRpsForTable / cardinality);
+        effectiveHit = baseHit * (1 - invalidationRate);
+      }
+
+      // Per-endpoint read RPS attributed to this cache.
+      const epRps =
+        readEndpointTotalWeight > 0
+          ? totalReadRps * (e.weight / readEndpointTotalWeight)
+          : 0;
+
+      if (mode === 'ttl' && writeRpsForTable > 0) {
+        // Hits return stale data; staleness is bounded by TTL.
+        const staleFraction = Math.min(
+          1,
+          (writeRpsForTable * ttlSec) / cardinality
+        );
+        totalStaleReads += epRps * baseHit * staleFraction;
+      }
+
+      totalReads += epRps;
+      totalReadWeight += e.weight;
+      weightedEffectiveHit += e.weight * effectiveHit;
+    }
+
+    hitRateByRedisNodeId[node.id] =
+      totalReadWeight > 0
+        ? weightedEffectiveHit / totalReadWeight
+        : LEGACY_DEFAULT_HIT_RATE;
+  }
+
+  // If no Redis node sits in the graph, still report staleness against read traffic
+  // attributable to TTL-mode endpoints (the read may not actually be cached, but the
+  // metric is "what fraction of cache hits would be stale"; 0 reads ⇒ 0).
+  const cacheStaleReadPct =
+    totalReads > 0 ? (totalStaleReads / totalReads) * 100 : 0;
+
+  return { hitRateByRedisNodeId, cacheStaleReadPct };
 }
 
 function computePerNode(
@@ -217,13 +386,16 @@ function computePerNode(
   const effectiveRps = state.rps * effects.rpsMultiplier;
   const readRps = effectiveRps * readFraction;
   const writeRps = effectiveRps - readRps;
+  const costMix = avgQueryCostMix(state);
+  const cacheImpact = computeCacheImpact(state, readRps, writeRps);
   const flow = resolveFlow(
     state.graph,
     readRps,
     writeRps,
     effects,
     prevDepths,
-    dtMs
+    dtMs,
+    cacheImpact.hitRateByRedisNodeId
   );
   const perNodeUtilization: Record<string, number> = {};
   const perNodeLatency: Record<string, number> = {};
@@ -244,13 +416,20 @@ function computePerNode(
     const workingFraction = 1 - failFraction;
 
     let util: number;
-    if (spec.capacity === Infinity) {
+    if (node.type === 'postgres' || node.type === 'postgresReplica') {
+      const wmps = spec.workMsPerSec ?? 0;
+      const readLoad = flow.nodeReadLoad[node.id] ?? 0;
+      const writeLoad = Math.max(0, incoming - readLoad);
+      const workMs = readLoad * costMix.read + writeLoad * costMix.write;
+      const workingCap = wmps * tierMult.cap * instances * workingFraction;
+      util = workingCap > 0 ? workMs / workingCap : 1;
+    } else if (spec.capacity === Infinity) {
       util = 0;
     } else if (node.type === 'queue') {
-      util = (flow.queueDepths[node.id] ?? 0) / spec.capacity;
+      util = (flow.queueDepths[node.id] ?? 0) / (spec.capacity ?? 1);
     } else {
       const workingCap =
-        spec.capacity * tierMult.cap * instances * workingFraction;
+        (spec.capacity ?? 0) * tierMult.cap * instances * workingFraction;
       util = workingCap > 0 ? incoming / workingCap : 1;
     }
     perNodeUtilization[node.id] = util;
@@ -291,7 +470,8 @@ function computePerNode(
     perNodeError,
     perNodeIncomingRps,
     flow,
-    apiErrorRateMax
+    apiErrorRateMax,
+    cacheStaleReadPct: cacheImpact.cacheStaleReadPct
   };
 }
 
@@ -418,6 +598,7 @@ export function tick(
     errorPct,
     costUsd,
     staleReadPct,
+    cacheStaleReadPct: result.cacheStaleReadPct,
     queueDepthByNodeId: flow.queueDepths,
     queueArrivalRpsByNodeId: flow.queueArrivals,
     queueDepthMax,

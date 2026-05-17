@@ -98,11 +98,13 @@ function NodeInspector({ id }: { id: string }) {
   const errorPct = snapshot?.perNodeErrorPct[id] ?? 0;
   const incomingRps = snapshot?.perNodeIncomingRps[id] ?? 0;
   const ringColor = utilizationToHsl(util);
-  const scalable = spec.capacity !== Infinity && node.data.type !== 'queue';
+  const capForDisplay =
+    node.data.type === 'postgres' || node.data.type === 'postgresReplica'
+      ? spec.workMsPerSec ?? 0
+      : spec.capacity ?? 0;
+  const scalable = capForDisplay !== Infinity && node.data.type !== 'queue';
   const effectiveCapacity =
-    spec.capacity === Infinity
-      ? Infinity
-      : spec.capacity * tierMult.cap * instances;
+    capForDisplay === Infinity ? Infinity : capForDisplay * tierMult.cap * instances;
   const effectiveCost = spec.costPerMonthUsd * tierMult.cost * instances;
 
   return (
@@ -120,8 +122,14 @@ function NodeInspector({ id }: { id: string }) {
         {node.data.type === 'queue' ? null : (
           <Row
             label="Capacity / instance"
-            value={fmtCapacity(spec.capacity)}
-            unit={node.data.type === 'worker' ? 'jobs/s' : 'rps'}
+            value={fmtCapacity(capForDisplay)}
+            unit={
+              node.data.type === 'postgres' || node.data.type === 'postgresReplica'
+                ? 'work-ms/s'
+                : node.data.type === 'worker'
+                  ? 'jobs/s'
+                  : 'rps'
+            }
           />
         )}
         <Row label="Base latency" value={fmtFixed(spec.baseLatencyMs, 0)} unit="ms" />
@@ -171,7 +179,11 @@ function NodeInspector({ id }: { id: string }) {
           <Row
             label="Effective capacity"
             value={fmtCapacity(effectiveCapacity)}
-            unit="rps"
+            unit={
+              node.data.type === 'postgres' || node.data.type === 'postgresReplica'
+                ? 'work-ms/s'
+                : 'rps'
+            }
           />
           <Row
             label="Effective cost"
@@ -203,7 +215,7 @@ function NodeInspector({ id }: { id: string }) {
           />
           <Row
             label="Capacity"
-            value={fmtInt(spec.capacity)}
+            value={fmtInt(spec.capacity ?? 0)}
             unit="msgs"
           />
           <Row

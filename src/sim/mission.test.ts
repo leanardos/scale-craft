@@ -19,7 +19,10 @@ const SPEC: MissionSpec = {
   id: 'test',
   title: 'test',
   brief: 't',
-  targetRps: 1000,
+  // 2500 RPS sits well above tier-S Postgres (≈1000 RPS reads under v0.3
+  // work-ms/sec model), so the no-cache linear path saturates and loses
+  // on errors while a Redis-fronted path can still serve at 15% miss.
+  targetRps: 2500,
   rampSeconds: 20,
   sustainSeconds: 30,
   winConditions: { p95MaxMs: 200, errorMaxPct: 1, costMaxUsd: 500 },
@@ -41,6 +44,7 @@ const winningSnap = (timestamp: number): Snapshot => ({
   errorPct: 0,
   costUsd: 200,
   staleReadPct: 0,
+  cacheStaleReadPct: 0,
   queueDepthByNodeId: {},
   queueArrivalRpsByNodeId: {},
   queueDepthMax: 0,
@@ -55,7 +59,9 @@ const failingSnap = (timestamp: number, errorPct: number): Snapshot => ({
 const linearGraph: SimGraph = {
   nodes: [
     { id: 'c', type: 'client' },
-    { id: 'a', type: 'api' },
+    // 2 API instances so the counterfactual (Redis-inserted) graph in
+    // decisiveDecision tests doesn't trip on API saturation at 2500 RPS.
+    { id: 'a', type: 'api', instanceCount: 2 },
     { id: 'p', type: 'postgres' }
   ],
   edges: [
@@ -67,7 +73,8 @@ const linearGraph: SimGraph = {
 const cachedGraph: SimGraph = {
   nodes: [
     { id: 'c', type: 'client' },
-    { id: 'a', type: 'api' },
+    // 2 API instances to clear the API capacity bound at 2500 RPS.
+    { id: 'a', type: 'api', instanceCount: 2 },
     { id: 'r', type: 'redis' },
     { id: 'p', type: 'postgres' }
   ],
@@ -238,6 +245,7 @@ describe('mission v2 win predicates', () => {
     errorPct: 0,
     costUsd: 0,
     staleReadPct: 0,
+    cacheStaleReadPct: 0,
     queueDepthByNodeId: {},
     queueArrivalRpsByNodeId: {},
     queueDepthMax: 0,
@@ -387,7 +395,7 @@ describe('parseMission (v0.3 spec loader)', () => {
         method: 'GET',
         route: '/:slug',
         table: 'urls',
-        queryType: 'pointIndexed',
+        query: { type: 'pointIndexed', byColumn: 'slug' },
         responseSize: 200,
         skew: 'heavy',
         weight: 1
@@ -409,7 +417,7 @@ describe('parseMission (v0.3 spec loader)', () => {
     expect(m.tables![0].columns).toHaveLength(2);
     expect(m.tables![0].columns[0].indexed).toBe(true);
     expect(m.endpoints).toHaveLength(1);
-    expect(m.endpoints![0].queryType).toBe('pointIndexed');
+    expect(m.endpoints![0].query.type).toBe('pointIndexed');
     expect(m.endpoints![0].skew).toBe('heavy');
     expect(m.endpoints![0].table).toBe('urls');
   });
@@ -422,12 +430,14 @@ describe('parseMission (v0.3 spec loader)', () => {
     expect(() => parseMission(bad)).toThrow(/unknown table/i);
   });
 
-  it('rejects an endpoint with an invalid queryType', () => {
+  it('rejects an endpoint with an invalid query.type', () => {
     const bad = {
       ...v03Raw,
-      endpoints: [{ ...v03Raw.endpoints[0], queryType: 'bogus' }]
+      endpoints: [
+        { ...v03Raw.endpoints[0], query: { type: 'bogus' } }
+      ]
     };
-    expect(() => parseMission(bad)).toThrow(/queryType/i);
+    expect(() => parseMission(bad)).toThrow(/query/i);
   });
 
   it('rejects an endpoint with an invalid skew', () => {
@@ -457,5 +467,99 @@ describe('parseMission (v0.3 spec loader)', () => {
   it('rejects malformed input missing required fields', () => {
     expect(() => parseMission({})).toThrow();
     expect(() => parseMission(null)).toThrow();
+  });
+});
+
+describe('parseMission: schema validation for indexes and byColumn', () => {
+  it('auto-promotes primaryKey columns to indexed=true', () => {
+    const m = parseMission({
+      id: 'pk',
+      title: 't',
+      brief: 'b',
+      targetRps: 1,
+      rampSeconds: 1,
+      sustainSeconds: 1,
+      winConditions: { p95MaxMs: 1, errorMaxPct: 1, costMaxUsd: 1 },
+      allowedComponents: ['client'],
+      tables: [
+        {
+          name: 'x',
+          rowCount: 1,
+          avgRowSize: 1,
+          columns: [{ name: 'id', type: 'int', indexed: false, primaryKey: true }]
+        }
+      ]
+    });
+    expect(m.tables![0].columns[0].indexed).toBe(true);
+  });
+
+  it('accepts endpoint with query.byColumn referencing an existing column', () => {
+    const m = parseMission({
+      id: 'p',
+      title: 't',
+      brief: 'b',
+      targetRps: 1,
+      rampSeconds: 1,
+      sustainSeconds: 1,
+      winConditions: { p95MaxMs: 1, errorMaxPct: 1, costMaxUsd: 1 },
+      allowedComponents: ['client'],
+      tables: [
+        {
+          name: 'photos',
+          rowCount: 10,
+          avgRowSize: 100,
+          columns: [
+            { name: 'id', type: 'int', indexed: true, primaryKey: true },
+            { name: 'user_id', type: 'int', indexed: true }
+          ]
+        }
+      ],
+      endpoints: [
+        {
+          method: 'GET',
+          route: '/photos',
+          table: 'photos',
+          query: { type: 'pointIndexed', byColumn: 'user_id' },
+          responseSize: 100,
+          skew: 'heavy',
+          weight: 1
+        }
+      ]
+    });
+    expect(m.endpoints![0].query.byColumn).toBe('user_id');
+    expect(m.endpoints![0].query.type).toBe('pointIndexed');
+  });
+
+  it('rejects endpoint whose byColumn does not exist on the referenced table', () => {
+    const bad = {
+      id: 'p',
+      title: 't',
+      brief: 'b',
+      targetRps: 1,
+      rampSeconds: 1,
+      sustainSeconds: 1,
+      winConditions: { p95MaxMs: 1, errorMaxPct: 1, costMaxUsd: 1 },
+      allowedComponents: ['client'],
+      tables: [
+        {
+          name: 'photos',
+          rowCount: 10,
+          avgRowSize: 100,
+          columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+        }
+      ],
+      endpoints: [
+        {
+          method: 'GET',
+          route: '/x',
+          table: 'photos',
+          query: { type: 'pointIndexed', byColumn: 'nope' },
+          responseSize: 100,
+          skew: 'flat',
+          weight: 1
+        }
+      ]
+    };
+    expect(() => parseMission(bad)).toThrow(/byColumn/i);
   });
 });

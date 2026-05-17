@@ -4,7 +4,9 @@ import {
   SimGraph,
   Table,
   Endpoint,
+  EndpointCacheConfig,
   Column,
+  CacheMode,
   QUERY_TYPES,
   SKEWS,
   QueryType,
@@ -70,7 +72,9 @@ function parseColumn(raw: unknown, tableName: string): Column {
   if (primaryKey !== undefined && typeof primaryKey !== 'boolean') {
     throw new Error(`table "${tableName}".${name}: primaryKey must be boolean`);
   }
-  return { name, type, indexed, primaryKey };
+  // PK columns are always indexed (CONTEXT.md: "Primary-key columns are always indexed.")
+  const effectiveIndexed = primaryKey ? true : indexed;
+  return { name, type, indexed: effectiveIndexed, primaryKey };
 }
 
 function parseTable(raw: unknown): Table {
@@ -99,22 +103,42 @@ function parseTable(raw: unknown): Table {
   return { name, rowCount, avgRowSize, columns: parsedColumns };
 }
 
-function parseEndpoint(raw: unknown, tableNames: Set<string>): Endpoint {
+function parseEndpoint(
+  raw: unknown,
+  tables: Record<string, Table>
+): Endpoint {
   if (!isObject(raw)) throw new Error('endpoint must be an object');
-  const { method, route, table, queryType, responseSize, skew, weight } = raw;
+  const { method, route, table, query, responseSize, skew, weight } = raw;
   if (typeof method !== 'string' || method.length === 0) {
     throw new Error('endpoint.method must be a non-empty string');
   }
   if (typeof route !== 'string' || route.length === 0) {
     throw new Error('endpoint.route must be a non-empty string');
   }
-  if (typeof table !== 'string' || !tableNames.has(table)) {
+  if (typeof table !== 'string' || !(table in tables)) {
     throw new Error(`endpoint ${method} ${route}: unknown table "${String(table)}"`);
   }
-  if (typeof queryType !== 'string' || !QUERY_TYPES.includes(queryType as QueryType)) {
+  if (!isObject(query)) {
+    throw new Error(`endpoint ${method} ${route}: query must be an object`);
+  }
+  const { type: qType, byColumn } = query;
+  if (typeof qType !== 'string' || !QUERY_TYPES.includes(qType as QueryType)) {
     throw new Error(
-      `endpoint ${method} ${route}: invalid queryType "${String(queryType)}"`
+      `endpoint ${method} ${route}: invalid query.type "${String(qType)}"`
     );
+  }
+  if (byColumn !== undefined) {
+    if (typeof byColumn !== 'string') {
+      throw new Error(
+        `endpoint ${method} ${route}: query.byColumn must be a string`
+      );
+    }
+    const columns = tables[table].columns;
+    if (!columns.some((c) => c.name === byColumn)) {
+      throw new Error(
+        `endpoint ${method} ${route}: query.byColumn "${byColumn}" not found on table "${table}"`
+      );
+    }
   }
   if (typeof responseSize !== 'number' || responseSize < 0) {
     throw new Error(
@@ -127,15 +151,51 @@ function parseEndpoint(raw: unknown, tableNames: Set<string>): Endpoint {
   if (typeof weight !== 'number' || weight < 0) {
     throw new Error(`endpoint ${method} ${route}: weight must be a non-negative number`);
   }
+  const cache = parseCacheConfig(raw.cache, `${method} ${route}`);
   return {
     method,
     route,
     table,
-    queryType: queryType as QueryType,
+    query: {
+      type: qType as QueryType,
+      byColumn: byColumn as string | undefined
+    },
     responseSize,
     skew: skew as Skew,
-    weight
+    weight,
+    cache
   };
+}
+
+const CACHE_MODES: CacheMode[] = ['invalidate', 'ttl'];
+
+function parseCacheConfig(
+  raw: unknown,
+  ctx: string
+): EndpointCacheConfig | undefined {
+  if (raw === undefined) return undefined;
+  if (!isObject(raw)) throw new Error(`endpoint ${ctx}: cache must be an object`);
+  const { mode, ttlSeconds, cardinality } = raw;
+  const out: EndpointCacheConfig = {};
+  if (mode !== undefined) {
+    if (typeof mode !== 'string' || !CACHE_MODES.includes(mode as CacheMode)) {
+      throw new Error(`endpoint ${ctx}: cache.mode must be 'invalidate' or 'ttl'`);
+    }
+    out.mode = mode as CacheMode;
+  }
+  if (ttlSeconds !== undefined) {
+    if (typeof ttlSeconds !== 'number' || ttlSeconds <= 0) {
+      throw new Error(`endpoint ${ctx}: cache.ttlSeconds must be a positive number`);
+    }
+    out.ttlSeconds = ttlSeconds;
+  }
+  if (cardinality !== undefined) {
+    if (typeof cardinality !== 'number' || cardinality <= 0) {
+      throw new Error(`endpoint ${ctx}: cache.cardinality must be a positive number`);
+    }
+    out.cardinality = cardinality;
+  }
+  return out;
 }
 
 export function parseMission(raw: unknown): MissionSpec {
@@ -164,8 +224,9 @@ export function parseMission(raw: unknown): MissionSpec {
     if (!Array.isArray(spec.endpoints)) {
       throw new Error('mission.endpoints must be an array');
     }
-    const tableNames = new Set((tables ?? []).map((t) => t.name));
-    endpoints = spec.endpoints.map((e) => parseEndpoint(e, tableNames));
+    const tableMap: Record<string, Table> = {};
+    for (const t of tables ?? []) tableMap[t.name] = t;
+    endpoints = spec.endpoints.map((e) => parseEndpoint(e, tableMap));
   }
 
   return {

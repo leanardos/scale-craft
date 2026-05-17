@@ -126,13 +126,15 @@ describe('mission calibration — orders-5k-writes (writes only, sharding missio
   const spec = ordersSpec as unknown as MissionSpec;
 
   // Intended: load balancer → APIs → sharded Postgres (multiple postgres edges from one API).
+  // Post-v0.3: writes cost 5 ms each, so 5000 writes/sec = 25k work-ms/sec.
+  // Each shard needs ≥ ~13k wmps; 5 × L (4×) × 1000 wmps = 20k wmps per shard.
   const intendedGraph: SimGraph = {
     nodes: [
       { id: 'c', type: 'client' },
       { id: 'lb', type: 'lb' },
       { id: 'a', type: 'api', instanceCount: 4, tier: 'M' },
-      { id: 'p1', type: 'postgres', instanceCount: 3, tier: 'L' },
-      { id: 'p2', type: 'postgres', instanceCount: 3, tier: 'L' }
+      { id: 'p1', type: 'postgres', instanceCount: 5, tier: 'L' },
+      { id: 'p2', type: 'postgres', instanceCount: 5, tier: 'L' }
     ],
     edges: [
       { source: 'c', target: 'lb' },

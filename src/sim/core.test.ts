@@ -7,7 +7,10 @@ import {
   CROSS_REGION_LATENCY_MS
 } from './core';
 import { SimState } from './types';
-import { NODE_SPECS, REDIS_HIT_RATE } from './specs';
+import { NODE_SPECS, LEGACY_DEFAULT_HIT_RATE } from './specs';
+
+// Legacy v0.2 flows (no endpoints) still rely on the fallback hit rate.
+const REDIS_HIT_RATE = LEGACY_DEFAULT_HIT_RATE;
 import {
   DDOS_DURATION_MS,
   DDOS_MULTIPLIER,
@@ -45,8 +48,8 @@ describe('tick', () => {
   it('propagates load through Client → API → Postgres', () => {
     const snap = tick(linearState, 0);
     expect(snap.perNodeUtilization['c']).toBe(0);
-    expect(snap.perNodeUtilization['a']).toBeCloseTo(100 / NODE_SPECS.api.capacity, 5);
-    expect(snap.perNodeUtilization['p']).toBeCloseTo(100 / NODE_SPECS.postgres.capacity, 5);
+    expect(snap.perNodeUtilization['a']).toBeCloseTo(100 / (NODE_SPECS.api.capacity ?? 1), 5);
+    expect(snap.perNodeUtilization['p']).toBeCloseTo(100 / (NODE_SPECS.postgres.workMsPerSec ?? 1), 5);
   });
 
   it('is deterministic for identical inputs', () => {
@@ -74,8 +77,8 @@ describe('tick', () => {
 
   it('p95 ≈ sum of mean component latencies × 1.5', () => {
     const snap = tick(linearState, 0);
-    const apiU = 100 / NODE_SPECS.api.capacity;
-    const pgU = 100 / NODE_SPECS.postgres.capacity;
+    const apiU = 100 / (NODE_SPECS.api.capacity ?? 1);
+    const pgU = 100 / (NODE_SPECS.postgres.workMsPerSec ?? 1);
     const expected =
       (mm1Latency(NODE_SPECS.api.baseLatencyMs, apiU) +
         mm1Latency(NODE_SPECS.postgres.baseLatencyMs, pgU)) *
@@ -84,20 +87,22 @@ describe('tick', () => {
   });
 
   it('end-to-end error rate composes via 1 − ∏(1 − e_i)', () => {
+    // Postgres tier S saturates at ~1000 RPS reads under the work-ms/sec model.
     const overload: SimState = {
       ...linearState,
-      rps: 600
+      rps: 2500
     };
     const snap = tick(overload, 0);
-    const apiU = 600 / NODE_SPECS.api.capacity;
-    const pgU = 600 / NODE_SPECS.postgres.capacity;
+    const apiU = 2500 / (NODE_SPECS.api.capacity ?? 1);
+    const pgU = 2500 / (NODE_SPECS.postgres.workMsPerSec ?? 1);
     const ok = (1 - nodeErrorRate(apiU)) * (1 - nodeErrorRate(pgU));
     expect(snap.errorPct).toBeCloseTo((1 - ok) * 100, 5);
     expect(snap.errorPct).toBeGreaterThan(0);
   });
 
   it('flags saturated nodes once utilization crosses 0.95', () => {
-    const heavy: SimState = { ...linearState, rps: 290 };
+    // PG tier S saturates around 1000 RPS reads (1ms/req ÷ 1000 wmps).
+    const heavy: SimState = { ...linearState, rps: 960 };
     const snap = tick(heavy, 0);
     expect(snap.saturatedNodeIds).toContain('p');
     expect(snap.saturatedNodeIds).not.toContain('a');
@@ -127,9 +132,9 @@ describe('tick', () => {
       incidents: []
     };
     const snap = tick(cached, 0);
-    const apiU = 1000 / NODE_SPECS.api.capacity;
-    const redisU = 1000 / NODE_SPECS.redis.capacity;
-    const pgU = 150 / NODE_SPECS.postgres.capacity;
+    const apiU = 1000 / (NODE_SPECS.api.capacity ?? 1);
+    const redisU = 1000 / (NODE_SPECS.redis.capacity ?? 1);
+    const pgU = 150 / (NODE_SPECS.postgres.workMsPerSec ?? 1);
     expect(snap.perNodeUtilization['a']).toBeCloseTo(apiU, 5);
     expect(snap.perNodeUtilization['r']).toBeCloseTo(redisU, 5);
     expect(snap.perNodeUtilization['p']).toBeCloseTo(pgU, 5);
@@ -244,8 +249,8 @@ describe('tick', () => {
     };
     const baseline = tick(linearState, 0);
     const during = tick(cachedGraph, SLOW_QUERY_DURATION_MS / 2);
-    const pgU = 100 / NODE_SPECS.postgres.capacity;
-    const apiLatency = mm1Latency(NODE_SPECS.api.baseLatencyMs, 100 / NODE_SPECS.api.capacity);
+    const pgU = 100 / (NODE_SPECS.postgres.workMsPerSec ?? 1);
+    const apiLatency = mm1Latency(NODE_SPECS.api.baseLatencyMs, 100 / (NODE_SPECS.api.capacity ?? 1));
     const slowPgLatency = mm1Latency(
       NODE_SPECS.postgres.baseLatencyMs * SLOW_QUERY_MULTIPLIER,
       pgU
@@ -275,10 +280,10 @@ describe('tick', () => {
       incidents: [{ kind: 'cache-poison', startedAt: 0 }]
     };
     const during = tick(cached, CACHE_POISON_DURATION_MS / 2);
-    expect(during.perNodeUtilization['p']).toBeCloseTo(200 / NODE_SPECS.postgres.capacity, 5);
+    expect(during.perNodeUtilization['p']).toBeCloseTo(200 / (NODE_SPECS.postgres.workMsPerSec ?? 1), 5);
     const after = tick(cached, CACHE_POISON_DURATION_MS + 1);
     expect(after.perNodeUtilization['p']).toBeCloseTo(
-      ((1 - REDIS_HIT_RATE) * 200) / NODE_SPECS.postgres.capacity,
+      ((1 - REDIS_HIT_RATE) * 200) / (NODE_SPECS.postgres.workMsPerSec ?? 1),
       5
     );
   });
@@ -306,11 +311,11 @@ describe('tick', () => {
     expect(snap.errorPct).toBeCloseTo(100, 5);
     const apiLatency = mm1Latency(
       NODE_SPECS.api.baseLatencyMs,
-      100 / NODE_SPECS.api.capacity
+      100 / (NODE_SPECS.api.capacity ?? 1)
     );
     const slowPg = mm1Latency(
       NODE_SPECS.postgres.baseLatencyMs * SLOW_QUERY_MULTIPLIER,
-      100 / NODE_SPECS.postgres.capacity
+      100 / (NODE_SPECS.postgres.workMsPerSec ?? 1)
     );
     expect(snap.p95Ms).toBeCloseTo((apiLatency + slowPg) * P95_MULTIPLIER, 5);
   });
@@ -636,7 +641,7 @@ describe('tick', () => {
       incidents: [{ kind: 'retry-storm', startedAt: 0 }]
     };
     const baseline = tick({ ...overload, incidents: [] }, 0);
-    const apiErr = nodeErrorRate(4000 / NODE_SPECS.api.capacity);
+    const apiErr = nodeErrorRate(4000 / ((NODE_SPECS.api.capacity ?? 1) ?? 1));
     const expectedRps = 4000 * (1 + RETRY_FACTOR * apiErr);
     const during = tick(overload, RETRY_STORM_DURATION_MS / 2);
     expect(during.rps).toBeCloseTo(expectedRps, 5);
@@ -899,7 +904,7 @@ describe('tick', () => {
       incidents: []
     };
     const TICK_MS = 100;
-    const QUEUE_CAP = NODE_SPECS.queue.capacity;
+    const QUEUE_CAP = NODE_SPECS.queue.capacity ?? 0;
 
     // Phase 1: linear growth at (500 − 200) = 300 msgs/s. After 1s, depth = 300.
     let depths: Record<string, number> = {};
@@ -953,7 +958,7 @@ describe('tick', () => {
           { source: 'a', target: 'p' }
         ]
       },
-      rps: 800,
+      rps: 1100,
       incidents: []
     };
     const sharded: SimState = {
@@ -1088,5 +1093,414 @@ describe('tick', () => {
       100 * (1 - REDIS_HIT_RATE),
       5
     );
+  });
+});
+
+describe('service-time DB capacity (work-ms/sec)', () => {
+  const bigTable = {
+    name: 'big',
+    rowCount: 10_000_000,
+    avgRowSize: 200,
+    columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+  };
+
+  function dbState(
+    rps: number,
+    queryType: 'pointIndexed' | 'pointScan' | 'write'
+  ): SimState {
+    return {
+      graph: {
+        nodes: [
+          { id: 'c', type: 'client' },
+          { id: 'a', type: 'api', instanceCount: 50 },
+          { id: 'p', type: 'postgres' }
+        ],
+        edges: [
+          { source: 'c', target: 'a' },
+          { source: 'a', target: 'p' }
+        ]
+      },
+      rps,
+      readPct: queryType === 'write' ? 0 : 100,
+      tables: [bigTable],
+      endpoints: [
+        {
+          method: queryType === 'write' ? 'POST' : 'GET',
+          route: '/x',
+          table: 'big',
+          query: { type: queryType },
+          responseSize: 200,
+          skew: 'flat',
+          weight: 1
+        }
+      ],
+      incidents: []
+    };
+  }
+
+  it('10 scans/sec on a 10M-row table saturates a tier-S DB ≈ same as 10k point-lookups/sec', () => {
+    // pointScan cost = rowCount × 0.0001 = 10M × 0.0001 = 1000 ms/query
+    // 10 RPS × 1000 ms = 10_000 work-ms/sec
+    // 10_000 RPS × 1 ms = 10_000 work-ms/sec
+    const scans = tick(dbState(10, 'pointScan'), 0);
+    const points = tick(dbState(10_000, 'pointIndexed'), 0);
+    expect(scans.perNodeUtilization['p']).toBeCloseTo(
+      points.perNodeUtilization['p'],
+      5
+    );
+  });
+
+  it('mixed workload (5k point + 5 scans) composes additively in work-ms', () => {
+    const mixed: SimState = {
+      graph: {
+        nodes: [
+          { id: 'c', type: 'client' },
+          { id: 'a', type: 'api', instanceCount: 50 },
+          { id: 'p', type: 'postgres' }
+        ],
+        edges: [
+          { source: 'c', target: 'a' },
+          { source: 'a', target: 'p' }
+        ]
+      },
+      rps: 5005,
+      readPct: 100,
+      tables: [bigTable],
+      // 5000 weight pointIndexed + 5 weight pointScan → ratio split of total rps
+      endpoints: [
+        {
+          method: 'GET',
+          route: '/p',
+          table: 'big',
+          query: { type: 'pointIndexed' },
+          responseSize: 200,
+          skew: 'flat',
+          weight: 5000
+        },
+        {
+          method: 'GET',
+          route: '/s',
+          table: 'big',
+          query: { type: 'pointScan' },
+          responseSize: 200,
+          skew: 'flat',
+          weight: 5
+        }
+      ],
+      incidents: []
+    };
+    const snap = tick(mixed, 0);
+    // 5000 × 1 + 5 × 1000 = 5000 + 5000 = 10_000 work-ms/sec
+    const pointsOnly = tick(dbState(10_000, 'pointIndexed'), 0);
+    expect(snap.perNodeUtilization['p']).toBeCloseTo(
+      pointsOnly.perNodeUtilization['p'],
+      5
+    );
+  });
+
+  it('Redis hit rate is derived from endpoint working set + cache memory + skew', () => {
+    // 1 GB working set; tier-S Redis = 1 GB → cacheBytes ≥ workingSet → ≥ 99% hit.
+    const smallTable = {
+      name: 'kv',
+      rowCount: 5_000_000,
+      avgRowSize: 200,
+      columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+    };
+    const state: SimState = {
+      graph: {
+        nodes: [
+          { id: 'c', type: 'client' },
+          { id: 'a', type: 'api', instanceCount: 10 },
+          { id: 'r', type: 'redis', tier: 'S' },
+          { id: 'p', type: 'postgres' }
+        ],
+        edges: [
+          { source: 'c', target: 'a' },
+          { source: 'a', target: 'r' },
+          { source: 'r', target: 'p' }
+        ]
+      },
+      rps: 1000,
+      readPct: 100,
+      tables: [smallTable],
+      endpoints: [
+        {
+          method: 'GET',
+          route: '/kv',
+          table: 'kv',
+          query: { type: 'pointIndexed', byColumn: 'id' },
+          responseSize: 200,
+          skew: 'heavy',
+          weight: 1
+        }
+      ],
+      incidents: []
+    };
+    const snap = tick(state, 0);
+    // With ≥99% hit, Postgres should receive ≤ 1% of read traffic = ≤ 10 RPS.
+    expect(snap.perNodeIncomingRps['p']).toBeLessThanOrEqual(10);
+  });
+
+  it('Redis hit rate collapses for flat skew on a working set far larger than cache', () => {
+    const big = {
+      name: 'big',
+      rowCount: 100_000_000, // 100M × 200 = 20 GB working set
+      avgRowSize: 200,
+      columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+    };
+    const state: SimState = {
+      graph: {
+        nodes: [
+          { id: 'c', type: 'client' },
+          { id: 'a', type: 'api', instanceCount: 10 },
+          { id: 'r', type: 'redis', tier: 'S' }, // 1 GB only
+          { id: 'p', type: 'postgres', instanceCount: 50 }
+        ],
+        edges: [
+          { source: 'c', target: 'a' },
+          { source: 'a', target: 'r' },
+          { source: 'r', target: 'p' }
+        ]
+      },
+      rps: 1000,
+      readPct: 100,
+      tables: [big],
+      endpoints: [
+        {
+          method: 'GET',
+          route: '/scan',
+          table: 'big',
+          query: { type: 'pointIndexed', byColumn: 'id' },
+          responseSize: 200,
+          skew: 'flat',
+          weight: 1
+        }
+      ],
+      incidents: []
+    };
+    const snap = tick(state, 0);
+    // f = 1GB / 20GB = 0.05 → flat hit ≤ ~0.05 → PG sees ≥ ~95% of reads.
+    expect(snap.perNodeIncomingRps['p']).toBeGreaterThan(900);
+  });
+
+  it('GET by indexed column: ~1ms; without index, sim falls back to scan (~rowCount × 0.0001 ms)', () => {
+    const photos10M = (userIndexed: boolean) => ({
+      name: 'photos',
+      rowCount: 10_000_000,
+      avgRowSize: 200,
+      columns: [
+        { name: 'id', type: 'int', indexed: true, primaryKey: true },
+        { name: 'user_id', type: 'int', indexed: userIndexed }
+      ]
+    });
+    const mk = (userIndexed: boolean): SimState => ({
+      graph: {
+        nodes: [
+          { id: 'c', type: 'client' },
+          { id: 'a', type: 'api', instanceCount: 50 },
+          { id: 'p', type: 'postgres' }
+        ],
+        edges: [
+          { source: 'c', target: 'a' },
+          { source: 'a', target: 'p' }
+        ]
+      },
+      rps: 1,
+      readPct: 100,
+      tables: [photos10M(userIndexed)],
+      endpoints: [
+        {
+          method: 'GET',
+          route: '/photos',
+          table: 'photos',
+          query: { type: 'pointIndexed', byColumn: 'user_id' },
+          responseSize: 200,
+          skew: 'flat',
+          weight: 1
+        }
+      ],
+      incidents: []
+    });
+    const indexed = tick(mk(true), 0);
+    const unindexed = tick(mk(false), 0);
+    // util = work_ms / (1000 wmps × 1 inst × 1× tier)
+    expect(indexed.perNodeUtilization['p']).toBeCloseTo(0.001, 5); // 1 ms
+    expect(unindexed.perNodeUtilization['p']).toBeCloseTo(1.0, 5); // 1000 ms
+  });
+
+  it('POST cost reflects the non-PK index count: 0 → 5ms, 4 → 7ms', () => {
+    const tableWithIndexes = (nonPk: number) => ({
+      name: 'photos',
+      rowCount: 1000,
+      avgRowSize: 100,
+      columns: [
+        { name: 'id', type: 'int', indexed: true, primaryKey: true },
+        ...Array.from({ length: nonPk }, (_, i) => ({
+          name: `c${i}`,
+          type: 'int',
+          indexed: true
+        }))
+      ]
+    });
+    const mk = (nonPk: number): SimState => ({
+      graph: {
+        nodes: [
+          { id: 'c', type: 'client' },
+          { id: 'a', type: 'api', instanceCount: 50 },
+          { id: 'p', type: 'postgres' }
+        ],
+        edges: [
+          { source: 'c', target: 'a' },
+          { source: 'a', target: 'p' }
+        ]
+      },
+      rps: 1,
+      readPct: 0,
+      tables: [tableWithIndexes(nonPk)],
+      endpoints: [
+        {
+          method: 'POST',
+          route: '/photos',
+          table: 'photos',
+          query: { type: 'write' },
+          responseSize: 0,
+          skew: 'flat',
+          weight: 1
+        }
+      ],
+      incidents: []
+    });
+    const zero = tick(mk(0), 0);
+    const four = tick(mk(4), 0);
+    // 5 ms / 1000 wmps = 0.005; 7 ms / 1000 = 0.007
+    expect(zero.perNodeUtilization['p']).toBeCloseTo(0.005, 5);
+    expect(four.perNodeUtilization['p']).toBeCloseTo(0.007, 5);
+  });
+
+  it('without endpoints, default read cost = 1ms applies (legacy v0.2 missions)', () => {
+    // 1000 RPS reads × 1 ms = 1000 work-ms/sec = tier-S workMsPerSec → util = 1.0
+    const legacy: SimState = {
+      graph: {
+        nodes: [
+          { id: 'c', type: 'client' },
+          { id: 'a', type: 'api', instanceCount: 10 },
+          { id: 'p', type: 'postgres' }
+        ],
+        edges: [
+          { source: 'c', target: 'a' },
+          { source: 'a', target: 'p' }
+        ]
+      },
+      rps: 500,
+      incidents: []
+    };
+    const snap = tick(legacy, 0);
+    // 500 reads × 1ms / 1000 wmps = 0.5
+    expect(snap.perNodeUtilization['p']).toBeCloseTo(0.5, 5);
+  });
+});
+
+describe('cache consistency: write-invalidation default + TTL-only', () => {
+  const hotTable = {
+    name: 'hot',
+    rowCount: 1000,
+    avgRowSize: 200,
+    columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+  };
+
+  function mk(opts: {
+    rps: number;
+    readPct: number;
+    mode?: 'invalidate' | 'ttl';
+    ttlSeconds?: number;
+    cardinality?: number;
+  }): SimState {
+    const readEp: import('./types').Endpoint = {
+      method: 'GET',
+      route: '/r',
+      table: 'hot',
+      query: { type: 'pointIndexed', byColumn: 'id' },
+      responseSize: 200,
+      skew: 'heavy',
+      weight: opts.readPct,
+      cache: opts.mode
+        ? { mode: opts.mode, ttlSeconds: opts.ttlSeconds, cardinality: opts.cardinality }
+        : undefined
+    };
+    const writeEp: import('./types').Endpoint = {
+      method: 'POST',
+      route: '/w',
+      table: 'hot',
+      query: { type: 'write' },
+      responseSize: 0,
+      skew: 'flat',
+      weight: 100 - opts.readPct
+    };
+    return {
+      graph: {
+        nodes: [
+          { id: 'c', type: 'client' },
+          { id: 'a', type: 'api', instanceCount: 50 },
+          { id: 'r', type: 'redis', tier: 'M' },
+          { id: 'p', type: 'postgres', instanceCount: 10 }
+        ],
+        edges: [
+          { source: 'c', target: 'a' },
+          { source: 'a', target: 'r' },
+          { source: 'r', target: 'p' }
+        ]
+      },
+      rps: opts.rps,
+      readPct: opts.readPct,
+      tables: [hotTable],
+      endpoints: opts.readPct === 100 ? [readEp] : [readEp, writeEp],
+      incidents: []
+    };
+  }
+
+  it('invalidate mode (default): writes increase the read miss rate vs no writes', () => {
+    // Same total RPS for fair comparison. Heavy skew + tier-M cache → high baseline hit.
+    const noWrites = tick(mk({ rps: 1000, readPct: 100 }), 0);
+    const withWrites = tick(mk({ rps: 1000, readPct: 90, cardinality: 1000 }), 0);
+    // With 100 writes/sec invalidating a 1000-key cache, hit rate drops measurably.
+    // Less hit rate → more reads reach PG.
+    const pgNoWrites = noWrites.perNodeIncomingRps['p'] ?? 0;
+    const pgWithWrites = withWrites.perNodeIncomingRps['p'] ?? 0;
+    // Normalize by read traffic: noWrites has 1000 reads, withWrites has 900 reads.
+    // Miss rate per read should be higher in withWrites.
+    const missRateNo = pgNoWrites / 1000;
+    const missRateWith = (pgWithWrites - 100) / 900; // subtract pass-through writes
+    expect(missRateWith).toBeGreaterThan(missRateNo);
+  });
+
+  it('ttl mode: stale-read rate = min(1, writeRps × ttl / cardinality)', () => {
+    // 100 writes/sec × 60s / 10_000 keys = 0.6 → 60%.
+    const snap = tick(
+      mk({ rps: 1000, readPct: 90, mode: 'ttl', ttlSeconds: 60, cardinality: 10_000 }),
+      0
+    );
+    expect(snap.cacheStaleReadPct).toBeCloseTo(60, 0);
+  });
+
+  it('ttl mode caps stale-read at 100%', () => {
+    const snap = tick(
+      mk({ rps: 10_000, readPct: 50, mode: 'ttl', ttlSeconds: 60, cardinality: 1000 }),
+      0
+    );
+    expect(snap.cacheStaleReadPct).toBeLessThanOrEqual(100);
+    expect(snap.cacheStaleReadPct).toBeGreaterThan(99);
+  });
+
+  it('ttl mode: no writes → cacheStaleReadPct = 0', () => {
+    const snap = tick(
+      mk({ rps: 1000, readPct: 100, mode: 'ttl', ttlSeconds: 60, cardinality: 10_000 }),
+      0
+    );
+    expect(snap.cacheStaleReadPct).toBe(0);
+  });
+
+  it('snapshot exposes cacheStaleReadPct even without TTL endpoints (defaults to 0)', () => {
+    const snap = tick(mk({ rps: 100, readPct: 100 }), 0);
+    expect(snap.cacheStaleReadPct).toBe(0);
   });
 });

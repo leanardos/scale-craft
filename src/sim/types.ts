@@ -37,6 +37,8 @@ export interface SimState {
   rps: number;
   readPct?: number;
   incidents: import('./incidents').Incident[];
+  tables?: Table[];
+  endpoints?: Endpoint[];
 }
 
 export interface Snapshot {
@@ -54,6 +56,7 @@ export interface Snapshot {
   errorPct: number;
   costUsd: number;
   staleReadPct: number;
+  cacheStaleReadPct: number;
   queueDepthByNodeId: Record<string, number>;
   queueArrivalRpsByNodeId: Record<string, number>;
   queueDepthMax: number;
@@ -97,12 +100,26 @@ export interface Table {
   columns: Column[];
 }
 
+export interface EndpointQuery {
+  type: QueryType;
+  byColumn?: string;
+}
+
+export type CacheMode = 'invalidate' | 'ttl';
+
+export interface EndpointCacheConfig {
+  mode?: CacheMode;
+  ttlSeconds?: number;
+  cardinality?: number;
+}
+
 export interface Endpoint {
   method: string;
   route: string;
   table: string;
-  queryType: QueryType;
+  query: EndpointQuery;
   responseSize: number;
   skew: Skew;
   weight: number;
+  cache?: EndpointCacheConfig;
 }
