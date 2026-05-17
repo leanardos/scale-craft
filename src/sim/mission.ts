@@ -1,4 +1,15 @@
-import { NodeType, Snapshot, SimGraph } from './types';
+import {
+  NodeType,
+  Snapshot,
+  SimGraph,
+  Table,
+  Endpoint,
+  Column,
+  QUERY_TYPES,
+  SKEWS,
+  QueryType,
+  Skew
+} from './types';
 import { tick } from './core';
 import { IncidentKind } from './incidents';
 
@@ -32,9 +43,137 @@ export interface MissionSpec {
   loadProfileId?: string;
   incidentSchedule?: ScheduledIncident[];
   allowedComponents: NodeType[];
+  tables?: Table[];
+  endpoints?: Endpoint[];
 }
 
 export const DEFAULT_MISSION_READ_PCT = 100;
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function parseColumn(raw: unknown, tableName: string): Column {
+  if (!isObject(raw)) {
+    throw new Error(`table "${tableName}": column must be an object`);
+  }
+  const { name, type, indexed, primaryKey } = raw;
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error(`table "${tableName}": column name must be a non-empty string`);
+  }
+  if (typeof type !== 'string') {
+    throw new Error(`table "${tableName}".${name}: type must be a string`);
+  }
+  if (typeof indexed !== 'boolean') {
+    throw new Error(`table "${tableName}".${name}: indexed must be boolean`);
+  }
+  if (primaryKey !== undefined && typeof primaryKey !== 'boolean') {
+    throw new Error(`table "${tableName}".${name}: primaryKey must be boolean`);
+  }
+  return { name, type, indexed, primaryKey };
+}
+
+function parseTable(raw: unknown): Table {
+  if (!isObject(raw)) throw new Error('table must be an object');
+  const { name, rowCount, avgRowSize, columns } = raw;
+  if (typeof name !== 'string' || name.length === 0) {
+    throw new Error('table.name must be a non-empty string');
+  }
+  if (typeof rowCount !== 'number' || rowCount < 0) {
+    throw new Error(`table "${name}": rowCount must be a non-negative number`);
+  }
+  if (typeof avgRowSize !== 'number' || avgRowSize <= 0) {
+    throw new Error(`table "${name}": avgRowSize must be a positive number`);
+  }
+  if (!Array.isArray(columns) || columns.length === 0) {
+    throw new Error(`table "${name}": columns must be a non-empty array`);
+  }
+  const parsedColumns = columns.map((c) => parseColumn(c, name));
+  const seen = new Set<string>();
+  for (const c of parsedColumns) {
+    if (seen.has(c.name)) {
+      throw new Error(`table "${name}": duplicate column "${c.name}"`);
+    }
+    seen.add(c.name);
+  }
+  return { name, rowCount, avgRowSize, columns: parsedColumns };
+}
+
+function parseEndpoint(raw: unknown, tableNames: Set<string>): Endpoint {
+  if (!isObject(raw)) throw new Error('endpoint must be an object');
+  const { method, route, table, queryType, responseSize, skew, weight } = raw;
+  if (typeof method !== 'string' || method.length === 0) {
+    throw new Error('endpoint.method must be a non-empty string');
+  }
+  if (typeof route !== 'string' || route.length === 0) {
+    throw new Error('endpoint.route must be a non-empty string');
+  }
+  if (typeof table !== 'string' || !tableNames.has(table)) {
+    throw new Error(`endpoint ${method} ${route}: unknown table "${String(table)}"`);
+  }
+  if (typeof queryType !== 'string' || !QUERY_TYPES.includes(queryType as QueryType)) {
+    throw new Error(
+      `endpoint ${method} ${route}: invalid queryType "${String(queryType)}"`
+    );
+  }
+  if (typeof responseSize !== 'number' || responseSize < 0) {
+    throw new Error(
+      `endpoint ${method} ${route}: responseSize must be a non-negative number`
+    );
+  }
+  if (typeof skew !== 'string' || !SKEWS.includes(skew as Skew)) {
+    throw new Error(`endpoint ${method} ${route}: invalid skew "${String(skew)}"`);
+  }
+  if (typeof weight !== 'number' || weight < 0) {
+    throw new Error(`endpoint ${method} ${route}: weight must be a non-negative number`);
+  }
+  return {
+    method,
+    route,
+    table,
+    queryType: queryType as QueryType,
+    responseSize,
+    skew: skew as Skew,
+    weight
+  };
+}
+
+export function parseMission(raw: unknown): MissionSpec {
+  if (!isObject(raw)) {
+    throw new Error('mission must be an object');
+  }
+  const required = ['id', 'title', 'brief', 'targetRps', 'rampSeconds', 'sustainSeconds', 'winConditions', 'allowedComponents'] as const;
+  for (const key of required) {
+    if (!(key in raw)) throw new Error(`mission missing required field "${key}"`);
+  }
+  const spec = raw as Record<string, unknown> & Partial<MissionSpec>;
+
+  let tables: Table[] | undefined;
+  if (spec.tables !== undefined) {
+    if (!Array.isArray(spec.tables)) throw new Error('mission.tables must be an array');
+    tables = spec.tables.map(parseTable);
+    const seen = new Set<string>();
+    for (const t of tables) {
+      if (seen.has(t.name)) throw new Error(`duplicate table "${t.name}"`);
+      seen.add(t.name);
+    }
+  }
+
+  let endpoints: Endpoint[] | undefined;
+  if (spec.endpoints !== undefined) {
+    if (!Array.isArray(spec.endpoints)) {
+      throw new Error('mission.endpoints must be an array');
+    }
+    const tableNames = new Set((tables ?? []).map((t) => t.name));
+    endpoints = spec.endpoints.map((e) => parseEndpoint(e, tableNames));
+  }
+
+  return {
+    ...(raw as unknown as MissionSpec),
+    tables,
+    endpoints
+  };
+}
 
 export interface MissionRuntime {
   status: MissionStatus;

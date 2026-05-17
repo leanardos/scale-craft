@@ -63,3 +63,46 @@ export interface Snapshot {
 export function edgeKey(source: string, target: string): string {
   return `${source}->${target}`;
 }
+
+export type QueryType =
+  | 'pointIndexed'
+  | 'pointScan'
+  | 'rangeIndexed'
+  | 'rangeScan'
+  | 'write';
+
+export const QUERY_TYPES: QueryType[] = [
+  'pointIndexed',
+  'pointScan',
+  'rangeIndexed',
+  'rangeScan',
+  'write'
+];
+
+export type Skew = 'heavy' | 'medium' | 'flat';
+
+export const SKEWS: Skew[] = ['heavy', 'medium', 'flat'];
+
+export interface Column {
+  name: string;
+  type: string;
+  indexed: boolean;
+  primaryKey?: boolean;
+}
+
+export interface Table {
+  name: string;
+  rowCount: number;
+  avgRowSize: number;
+  columns: Column[];
+}
+
+export interface Endpoint {
+  method: string;
+  route: string;
+  table: string;
+  queryType: QueryType;
+  responseSize: number;
+  skew: Skew;
+  weight: number;
+}

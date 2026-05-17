@@ -7,6 +7,7 @@ import {
   decisiveDecision,
   winConditionsHold,
   hasRequiredComponents,
+  parseMission,
   MissionSpec,
   MissionRuntime,
   ERROR_HARD_FAIL_MS
@@ -352,5 +353,109 @@ describe('decisive-decision detection', () => {
     expect(d).not.toBeNull();
     expect(d!.message).toMatch(/Without Redis/);
     expect(d!.beforeP95Ms).toBeGreaterThan(d!.afterP95Ms);
+  });
+});
+
+describe('parseMission (v0.3 spec loader)', () => {
+  const v02Raw = {
+    id: 'user-service-1k',
+    title: 'Build a user service',
+    brief: 'Handle 1,000 RPS reads with p95 < 200ms.',
+    targetRps: 1000,
+    rampSeconds: 20,
+    sustainSeconds: 30,
+    winConditions: { p95MaxMs: 200, errorMaxPct: 1, costMaxUsd: 500 },
+    allowedComponents: ['client', 'api', 'redis', 'postgres']
+  };
+
+  const v03Raw = {
+    ...v02Raw,
+    id: 'url-shortener-10k',
+    tables: [
+      {
+        name: 'urls',
+        rowCount: 10_000_000,
+        avgRowSize: 200,
+        columns: [
+          { name: 'slug', type: 'text', indexed: true, primaryKey: true },
+          { name: 'target', type: 'text', indexed: false }
+        ]
+      }
+    ],
+    endpoints: [
+      {
+        method: 'GET',
+        route: '/:slug',
+        table: 'urls',
+        queryType: 'pointIndexed',
+        responseSize: 200,
+        skew: 'heavy',
+        weight: 1
+      }
+    ]
+  };
+
+  it('loads a v0.2 mission with no tables/endpoints cleanly', () => {
+    const m = parseMission(v02Raw);
+    expect(m.id).toBe('user-service-1k');
+    expect(m.tables).toBeUndefined();
+    expect(m.endpoints).toBeUndefined();
+  });
+
+  it('round-trips a v0.3 mission preserving tables and endpoints', () => {
+    const m = parseMission(v03Raw);
+    expect(m.tables).toHaveLength(1);
+    expect(m.tables![0].name).toBe('urls');
+    expect(m.tables![0].columns).toHaveLength(2);
+    expect(m.tables![0].columns[0].indexed).toBe(true);
+    expect(m.endpoints).toHaveLength(1);
+    expect(m.endpoints![0].queryType).toBe('pointIndexed');
+    expect(m.endpoints![0].skew).toBe('heavy');
+    expect(m.endpoints![0].table).toBe('urls');
+  });
+
+  it('rejects an endpoint that references an unknown table', () => {
+    const bad = {
+      ...v03Raw,
+      endpoints: [{ ...v03Raw.endpoints[0], table: 'nope' }]
+    };
+    expect(() => parseMission(bad)).toThrow(/unknown table/i);
+  });
+
+  it('rejects an endpoint with an invalid queryType', () => {
+    const bad = {
+      ...v03Raw,
+      endpoints: [{ ...v03Raw.endpoints[0], queryType: 'bogus' }]
+    };
+    expect(() => parseMission(bad)).toThrow(/queryType/i);
+  });
+
+  it('rejects an endpoint with an invalid skew', () => {
+    const bad = {
+      ...v03Raw,
+      endpoints: [{ ...v03Raw.endpoints[0], skew: 'sideways' }]
+    };
+    expect(() => parseMission(bad)).toThrow(/skew/i);
+  });
+
+  it('rejects a table with duplicate column names', () => {
+    const bad = {
+      ...v03Raw,
+      tables: [
+        {
+          ...v03Raw.tables[0],
+          columns: [
+            { name: 'slug', type: 'text', indexed: true, primaryKey: true },
+            { name: 'slug', type: 'text', indexed: false }
+          ]
+        }
+      ]
+    };
+    expect(() => parseMission(bad)).toThrow(/duplicate column/i);
+  });
+
+  it('rejects malformed input missing required fields', () => {
+    expect(() => parseMission({})).toThrow();
+    expect(() => parseMission(null)).toThrow();
   });
 });
