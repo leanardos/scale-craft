@@ -12,6 +12,8 @@ import ingestSpec from '../missions/ingest-100k-burst.json';
 import timelineSpec from '../missions/timeline-stale-reads.json';
 import surviveSpec from '../missions/survive-region-outage.json';
 import marathonSpec from '../missions/p95-marathon.json';
+import urlShortenerSpecRaw from '../missions/url-shortener-10k.json';
+import { parseMission } from './mission';
 
 const TICK_MS = 100;
 
@@ -77,7 +79,14 @@ function simulateMission(spec: MissionSpec, graph: SimGraph): MissionRunResult {
 
     const readPct = spec.readPct ?? DEFAULT_MISSION_READ_PCT;
     snap = tick(
-      { graph, rps, readPct, incidents },
+      {
+        graph,
+        rps,
+        readPct,
+        incidents,
+        tables: spec.tables,
+        endpoints: spec.endpoints
+      },
       now,
       prevDepths,
       TICK_MS
@@ -309,6 +318,53 @@ describe('mission calibration — survive-region-outage (fault-tolerance mission
     const intended = simulateMission(spec, intendedGraph);
     const runner = simulateMission(spec, runnerUpGraph);
     expect(intended.maxErrorPct).toBeLessThan(runner.maxErrorPct);
+  });
+});
+
+describe('mission calibration — url-shortener-10k (cache-hot-path mission)', () => {
+  const spec = parseMission(urlShortenerSpecRaw);
+
+  // Intended: client → API → Redis-M (4GB > 2GB working set) → Postgres.
+  // Heavy skew + 10M rows × 200B = 2GB working set; tier-M Redis (4GB) covers it
+  // so reads are absorbed and only writes hit Postgres.
+  const intendedGraph: SimGraph = {
+    nodes: [
+      { id: 'c', type: 'client' },
+      { id: 'a', type: 'api', instanceCount: 3, tier: 'M' },
+      { id: 'r', type: 'redis', instanceCount: 1, tier: 'M' },
+      { id: 'p', type: 'postgres', instanceCount: 1, tier: 'M' }
+    ],
+    edges: [
+      { source: 'c', target: 'a' },
+      { source: 'a', target: 'r' },
+      { source: 'r', target: 'p' }
+    ]
+  };
+
+  // Runner-up: no Redis. Even at L tier, Postgres alone can't absorb 9,800 rps
+  // of point lookups + 200 writes/sec, and the player can't scale it enough to
+  // both meet p95 and stay in budget.
+  const runnerUpGraph: SimGraph = {
+    nodes: [
+      { id: 'c', type: 'client' },
+      { id: 'a', type: 'api', instanceCount: 3, tier: 'M' },
+      { id: 'p', type: 'postgres', instanceCount: 1, tier: 'L' }
+    ],
+    edges: [
+      { source: 'c', target: 'a' },
+      { source: 'a', target: 'p' }
+    ]
+  };
+
+  it('runner-up (no Redis) blows the p95 budget', () => {
+    const runner = simulateMission(spec, runnerUpGraph);
+    expect(runner.maxP95Ms).toBeGreaterThan(spec.winConditions.p95MaxMs);
+  });
+
+  it('intended (cache absorbs reads) beats runner-up on p95', () => {
+    const intended = simulateMission(spec, intendedGraph);
+    const runner = simulateMission(spec, runnerUpGraph);
+    expect(intended.maxP95Ms).toBeLessThan(runner.maxP95Ms);
   });
 });
 

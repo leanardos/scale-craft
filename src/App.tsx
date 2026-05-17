@@ -190,6 +190,8 @@ export default function App() {
   const edges = useStore((s) => s.edges);
   const paused = useStore((s) => s.paused);
   const incidents = useStore((s) => s.incidents);
+  const tables = useStore((s) => s.tables);
+  const endpoints = useStore((s) => s.endpoints);
   const selection = useStore((s) => s.selection);
   const clearSelection = useStore((s) => s.clearSelection);
   const workerRef = useRef<Worker | null>(null);
@@ -209,7 +211,9 @@ export default function App() {
         graph: useStore.getState().toSimGraph(),
         rps: useStore.getState().rps,
         readPct: useStore.getState().readPct,
-        incidents: useStore.getState().incidents
+        incidents: useStore.getState().incidents,
+        tables: useStore.getState().tables,
+        endpoints: useStore.getState().endpoints
       }
     });
     return () => {
@@ -226,10 +230,12 @@ export default function App() {
         graph: useStore.getState().toSimGraph(),
         rps,
         readPct,
-        incidents
+        incidents,
+        tables,
+        endpoints
       }
     });
-  }, [rps, readPct, nodes, edges, incidents]);
+  }, [rps, readPct, nodes, edges, incidents, tables, endpoints]);
 
   useEffect(() => {
     workerRef.current?.postMessage({ type: paused ? 'pause' : 'resume' });

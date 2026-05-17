@@ -4,12 +4,14 @@ import { Palette } from './Palette';
 import { IncidentsPanel } from './IncidentsPanel';
 import { TopologyPanel } from './TopologyPanel';
 import { MissionPanel } from '../mission/MissionPanel';
+import { MissionBriefPanel } from '../mission/MissionBriefPanel';
 
 export function Sidebar() {
   const resetHints = useStore((s) => s.resetHints);
   return (
     <aside className="sc-sidebar">
       <h1 className="sc-sidebar__title">ScaleCraft</h1>
+      <MissionBriefPanel />
       <MissionPanel />
       <TrafficDial />
       <div className="sc-sidebar__row">

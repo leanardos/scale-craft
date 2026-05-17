@@ -2141,3 +2141,275 @@ body,
 .sc-sidebar .sc-topology__list {
   max-height: 120px;
 }
+
+/* Inspector tabs */
+.sc-inspector__tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid #1e293b;
+  margin-bottom: 4px;
+}
+
+.sc-inspector__tab {
+  flex: 1;
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #94a3b8;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  padding: 6px 8px;
+  cursor: pointer;
+}
+
+.sc-inspector__tab:hover {
+  color: #cbd5e1;
+}
+
+.sc-inspector__tab.is-active {
+  color: #f1f5f9;
+  border-bottom-color: #38bdf8;
+}
+
+.sc-inspector__empty {
+  font-size: 12px;
+  color: #94a3b8;
+  font-style: italic;
+}
+
+/* Endpoint editor */
+.sc-endpoint__field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  padding: 3px 0;
+}
+
+.sc-endpoint__label {
+  flex: 0 0 90px;
+  color: #94a3b8;
+}
+
+.sc-endpoint__value {
+  color: #f1f5f9;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.sc-endpoint__flags {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #1e293b;
+  display: grid;
+  gap: 3px;
+}
+
+.sc-endpoint__flags-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.sc-endpoint__flag {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+
+.sc-endpoint__flag-label {
+  color: #94a3b8;
+}
+
+.sc-endpoint__flag-value {
+  color: #64748b;
+  font-variant-numeric: tabular-nums;
+}
+
+.sc-endpoint__flags-note {
+  margin-top: 2px;
+  font-size: 10px;
+  font-style: italic;
+  color: #64748b;
+}
+
+/* Schema editor */
+.sc-schema__columns {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #1e293b;
+  display: grid;
+  gap: 6px;
+}
+
+.sc-schema__columns-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+.sc-schema__col {
+  background: #0a1322;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  padding: 6px 8px;
+  display: grid;
+  gap: 4px;
+}
+
+.sc-schema__col-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.sc-schema__col-name {
+  color: #f1f5f9;
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.sc-schema__col-type {
+  color: #94a3b8;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.sc-schema__col-name-input,
+.sc-schema__col-type-input {
+  padding: 3px 6px;
+  font-size: 11px;
+}
+
+.sc-schema__col-pk {
+  margin-left: auto;
+  background: #1e293b;
+  color: #facc15;
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.sc-schema__index {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: #cbd5e1;
+  cursor: pointer;
+}
+
+.sc-schema__index.is-pk {
+  cursor: not-allowed;
+  color: #64748b;
+}
+
+.sc-schema__index-hint {
+  margin-left: auto;
+  color: #64748b;
+  font-size: 10px;
+  font-style: italic;
+}
+
+/* Mission Brief panel */
+.sc-brief {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  margin-bottom: 12px;
+  overflow: hidden;
+}
+
+.sc-brief__head {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: transparent;
+  border: none;
+  color: #f1f5f9;
+  padding: 10px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.sc-brief__head:hover {
+  background: #111c33;
+}
+
+.sc-brief__chev {
+  font-size: 11px;
+  color: #94a3b8;
+  width: 12px;
+}
+
+.sc-brief__title {
+  flex: 1;
+}
+
+.sc-brief__body {
+  padding: 0 12px 10px;
+  display: grid;
+  gap: 8px;
+  font-size: 12px;
+  color: #cbd5e1;
+}
+
+.sc-brief__line {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+}
+
+.sc-brief__line-label {
+  flex: 0 0 50px;
+  color: #94a3b8;
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.sc-brief__line-value {
+  color: #f1f5f9;
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.sc-brief__group {
+  margin-top: 4px;
+  padding-top: 6px;
+  border-top: 1px dashed #1e293b;
+}
+
+.sc-brief__group-label {
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: #94a3b8;
+  margin-bottom: 4px;
+}
+
+.sc-brief__row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 2px 0;
+  font-size: 11px;
+}
+
+.sc-brief__row-name {
+  color: #e2e8f0;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.sc-brief__row-meta {
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+}

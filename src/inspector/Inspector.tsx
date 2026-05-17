@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { LineChart, Line, ResponsiveContainer, YAxis } from 'recharts';
 import {
   useStore,
@@ -8,6 +8,8 @@ import {
   MIN_INSTANCE_COUNT,
   MAX_INSTANCE_COUNT
 } from '../store/useStore';
+import { EndpointsTab } from './EndpointsTab';
+import { SchemaTab } from './SchemaTab';
 import {
   NODE_SPECS,
   TIERS,
@@ -77,6 +79,8 @@ function Row({ label, value, unit }: RowProps) {
   );
 }
 
+type NodeTab = 'overview' | 'endpoints' | 'schema';
+
 function NodeInspector({ id }: { id: string }) {
   const node = useStore((s) => s.nodes.find((n) => n.id === id));
   const snapshot = useDisplaySnapshot();
@@ -87,9 +91,14 @@ function NodeInspector({ id }: { id: string }) {
   const setReadKeyCardinality = useStore((s) => s.setReadKeyCardinality);
   const setHitRate = useStore((s) => s.setHitRate);
   const setRegionId = useStore((s) => s.setRegionId);
+  const [activeTab, setActiveTab] = useState<NodeTab>('overview');
 
   if (!node) return null;
   const spec = NODE_SPECS[node.data.type];
+  const tabsForType: NodeTab[] = ['overview'];
+  if (node.data.type === 'api') tabsForType.push('endpoints');
+  if (node.data.type === 'postgres') tabsForType.push('schema');
+  const showTab = tabsForType.includes(activeTab) ? activeTab : 'overview';
   const instances = node.data.instanceCount ?? 1;
   const tier: Tier = node.data.tier ?? 'S';
   const tierMult = TIER_MULTIPLIERS[tier];
@@ -116,6 +125,32 @@ function NodeInspector({ id }: { id: string }) {
           <span className="sc-inspector__id">#{id}</span>
         </div>
       </div>
+
+      {tabsForType.length > 1 ? (
+        <div className="sc-inspector__tabs" role="tablist">
+          {tabsForType.map((t) => (
+            <button
+              key={t}
+              role="tab"
+              aria-selected={showTab === t}
+              className={`sc-inspector__tab${
+                showTab === t ? ' is-active' : ''
+              }`}
+              onClick={() => setActiveTab(t)}
+            >
+              {t === 'overview'
+                ? 'Overview'
+                : t === 'endpoints'
+                  ? 'Endpoints'
+                  : 'Schema'}
+            </button>
+          ))}
+        </div>
+      ) : null}
+
+      {showTab === 'endpoints' ? <EndpointsTab /> : null}
+      {showTab === 'schema' ? <SchemaTab /> : null}
+      {showTab !== 'overview' ? null : <>
 
       <section className="sc-inspector__section">
         <div className="sc-inspector__section-label">Spec</div>
@@ -308,6 +343,7 @@ function NodeInspector({ id }: { id: string }) {
         <div className="sc-inspector__section-label">Utilization · 60s</div>
         <Sparkline data={history} dataKey="util" color={ringColor} />
       </section>
+      </>}
     </>
   );
 }

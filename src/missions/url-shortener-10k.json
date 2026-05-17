@@ -1,0 +1,44 @@
+{
+  "id": "url-shortener-10k",
+  "title": "URL shortener: 10,000 RPS",
+  "brief": "Serve 10,000 RPS against a 10M-row slugs table with p95 < 50ms, errors < 0.1%, on a $500/mo budget. Reads are heavy-skewed — the hot path can sit on a cache. Writes are 2% of traffic.",
+  "targetRps": 10000,
+  "readPct": 98,
+  "rampSeconds": 30,
+  "sustainSeconds": 60,
+  "winConditions": { "p95MaxMs": 50, "errorMaxPct": 0.1, "costMaxUsd": 500 },
+  "requiredComponents": ["postgres"],
+  "allowedComponents": ["client", "lb", "api", "redis", "postgres"],
+  "tables": [
+    {
+      "name": "slugs",
+      "rowCount": 10000000,
+      "avgRowSize": 200,
+      "columns": [
+        { "name": "slug", "type": "string", "indexed": true, "primaryKey": true },
+        { "name": "url", "type": "string", "indexed": false },
+        { "name": "created_at", "type": "timestamp", "indexed": false }
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "method": "GET",
+      "route": "/:slug",
+      "table": "slugs",
+      "query": { "type": "pointIndexed", "byColumn": "slug" },
+      "responseSize": 200,
+      "skew": "heavy",
+      "weight": 0.98
+    },
+    {
+      "method": "POST",
+      "route": "/shorten",
+      "table": "slugs",
+      "query": { "type": "write" },
+      "responseSize": 200,
+      "skew": "flat",
+      "weight": 0.02
+    }
+  ]
+}

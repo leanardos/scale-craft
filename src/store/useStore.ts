@@ -1,5 +1,13 @@
 import { create } from 'zustand';
-import { Snapshot, NodeType, SimGraph, edgeKey } from '../sim/types';
+import {
+  Snapshot,
+  NodeType,
+  SimGraph,
+  edgeKey,
+  Table,
+  Endpoint,
+  Column
+} from '../sim/types';
 import {
   Tier,
   DEFAULT_REPLICATION_LAG_MS,
@@ -120,6 +128,21 @@ interface AppState {
   setHitRate: (id: string, hitRate: number) => void;
   setRegionId: (id: string, regionId: string) => void;
   applyTopology: (t: SavedTopology) => void;
+  tables: Table[];
+  endpoints: Endpoint[];
+  setColumnIndexed: (tableName: string, columnName: string, indexed: boolean) => void;
+  updateTable: (tableName: string, patch: Partial<Omit<Table, 'columns'>>) => void;
+  updateColumn: (
+    tableName: string,
+    columnName: string,
+    patch: Partial<Omit<Column, 'primaryKey'>>
+  ) => void;
+  updateEndpoint: (
+    index: number,
+    patch: Partial<Omit<Endpoint, 'query'>> & {
+      query?: Partial<Endpoint['query']>;
+    }
+  ) => void;
   seenHints: SeenHints;
   markHintSeen: (key: HintKey | string) => void;
   resetHints: () => void;
@@ -229,6 +252,21 @@ function loadInitialHints(): SeenHints {
   return loadSeenHints();
 }
 
+function cloneTables(tables: Table[] | undefined): Table[] {
+  return (tables ?? []).map((t) => ({
+    ...t,
+    columns: t.columns.map((c) => ({ ...c }))
+  }));
+}
+
+function cloneEndpoints(endpoints: Endpoint[] | undefined): Endpoint[] {
+  return (endpoints ?? []).map((e) => ({
+    ...e,
+    query: { ...e.query },
+    cache: e.cache ? { ...e.cache } : undefined
+  }));
+}
+
 export const useStore = create<AppState>((set, get) => ({
   seenHints: loadInitialHints(),
   markHintSeen: (key) => {
@@ -331,6 +369,8 @@ export const useStore = create<AppState>((set, get) => ({
     set({
       missionSpec: spec,
       missionRuntime: initialRuntime(),
+      tables: cloneTables(spec.tables),
+      endpoints: cloneEndpoints(spec.endpoints),
       incidents: [],
       paused: false,
       history: [],
@@ -343,7 +383,12 @@ export const useStore = create<AppState>((set, get) => ({
       readPct: spec.readPct ?? DEFAULT_MISSION_READ_PCT
     }),
   clearMission: () =>
-    set({ missionSpec: null, missionRuntime: initialRuntime() }),
+    set({
+      missionSpec: null,
+      missionRuntime: initialRuntime(),
+      tables: [],
+      endpoints: []
+    }),
   startMission: () => {
     const spec = get().missionSpec;
     if (!spec) return;
@@ -442,6 +487,59 @@ export const useStore = create<AppState>((set, get) => ({
   },
   nodes: initialNodes,
   edges: initialEdges,
+  tables: [],
+  endpoints: [],
+  setColumnIndexed: (tableName, columnName, indexed) => {
+    set({
+      tables: get().tables.map((t) => {
+        if (t.name !== tableName) return t;
+        return {
+          ...t,
+          columns: t.columns.map((c) => {
+            if (c.name !== columnName) return c;
+            if (c.primaryKey) return c;
+            return { ...c, indexed };
+          })
+        };
+      })
+    });
+  },
+  updateTable: (tableName, patch) => {
+    set({
+      tables: get().tables.map((t) =>
+        t.name === tableName ? { ...t, ...patch, columns: t.columns } : t
+      )
+    });
+  },
+  updateColumn: (tableName, columnName, patch) => {
+    set({
+      tables: get().tables.map((t) => {
+        if (t.name !== tableName) return t;
+        return {
+          ...t,
+          columns: t.columns.map((c) => {
+            if (c.name !== columnName) return c;
+            const next = { ...c, ...patch };
+            if (c.primaryKey) next.indexed = true;
+            return next;
+          })
+        };
+      })
+    });
+  },
+  updateEndpoint: (index, patch) => {
+    set({
+      endpoints: get().endpoints.map((e, i) => {
+        if (i !== index) return e;
+        const { query: queryPatch, ...rest } = patch;
+        return {
+          ...e,
+          ...rest,
+          query: queryPatch ? { ...e.query, ...queryPatch } : e.query
+        };
+      })
+    });
+  },
   setNodes: (next) => set({ nodes: next }),
   setEdges: (next) => set({ edges: next }),
   addNode: (type, position) => {
@@ -630,7 +728,9 @@ export const useStore = create<AppState>((set, get) => ({
       selection: null,
       incidents: [],
       missionSpec: null,
-      missionRuntime: initialRuntime()
+      missionRuntime: initialRuntime(),
+      tables: [],
+      endpoints: []
     }),
   toSimGraph: () => {
     const { nodes, edges } = get();
