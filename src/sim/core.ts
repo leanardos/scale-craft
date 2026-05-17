@@ -13,11 +13,11 @@ import {
   TIER_MULTIPLIERS,
   DEFAULT_REPLICATION_LAG_MS,
   DEFAULT_READ_KEY_CARDINALITY,
-  CDN_DEFAULT_HIT_RATE,
   QUERY_COSTS,
   DEFAULT_READ_QUERY_COST_MS,
   DEFAULT_WRITE_QUERY_COST_MS,
   REDIS_TIER_MEMORY_BYTES,
+  CDN_TIER_MEMORY_BYTES,
   derivedHitRate
 } from './specs';
 import {
@@ -66,7 +66,10 @@ function resolveFlow(
   effects: IncidentEffects,
   prevDepths: Record<string, number>,
   dtMs: number,
-  redisHitRateByNodeId: Record<string, number>
+  redisHitRateByNodeId: Record<string, number>,
+  cdnHitRateByNodeId: Record<string, number>,
+  replicaSafeReadFraction: number,
+  asyncWriteFraction: number
 ): FlowResult {
   const adjacency: Record<string, string[]> = {};
   for (const e of graph.edges) {
@@ -118,7 +121,9 @@ function resolveFlow(
 
     if (typeOf[id] === 'cdn') {
       const node = nodeById[id];
-      const baseHit = node?.hitRate ?? CDN_DEFAULT_HIT_RATE;
+      // Manual hitRate override (slider) wins over the derived per-endpoint rate.
+      const derived = cdnHitRateByNodeId[id] ?? 0;
+      const baseHit = node?.hitRate ?? derived;
       const hitRate = effects.hitRateOverrideByType.cdn ?? baseHit;
       forwardReads = r * (1 - hitRate);
     }
@@ -171,18 +176,57 @@ function resolveFlow(
     const writableTargets = downstream.filter(
       (t) => typeOf[t] !== 'postgresReplica'
     );
-    const readTargets = replicaTargets.length > 0 ? replicaTargets : downstream;
+    const replicaCapable = replicaTargets.length > 0;
+    const readTargets = replicaCapable ? replicaTargets : downstream;
     const writeTargets =
       writableTargets.length > 0 ? writableTargets : downstream;
 
-    const perRead = readTargets.length > 0 ? forwardReads / readTargets.length : 0;
-    const perWrite =
-      writeTargets.length > 0 ? forwardWrites / writeTargets.length : 0;
+    // replicaSafeReadFraction splits reads between replica-eligible and
+    // primary-only buckets. With no replicas downstream the split collapses
+    // (everything goes to downstream as before).
+    const replicaSafeReads = replicaCapable
+      ? forwardReads * replicaSafeReadFraction
+      : forwardReads;
+    const replicaUnsafeReads = replicaCapable
+      ? forwardReads - replicaSafeReads
+      : 0;
+
+    // asyncWriteFraction splits writes between queue-routed and direct buckets.
+    // Queue targets are the only true async path; non-queue writable targets
+    // (postgres, etc.) take sync writes. If only one path exists, the other
+    // bucket falls back to it (topology errors are surfaced separately).
+    const queueTargets = writeTargets.filter((t) => typeOf[t] === 'queue');
+    const directTargets = writeTargets.filter((t) => typeOf[t] !== 'queue');
+    let asyncWrites = forwardWrites * asyncWriteFraction;
+    let syncWrites = forwardWrites - asyncWrites;
+    if (queueTargets.length === 0 && asyncWrites > 0) {
+      syncWrites += asyncWrites;
+      asyncWrites = 0;
+    }
+    if (directTargets.length === 0 && syncWrites > 0) {
+      asyncWrites += syncWrites;
+      syncWrites = 0;
+    }
+
+    const perReplicaSafeRead =
+      readTargets.length > 0 ? replicaSafeReads / readTargets.length : 0;
+    const perReplicaUnsafeRead =
+      writeTargets.length > 0 ? replicaUnsafeReads / writeTargets.length : 0;
+    const perAsyncWrite =
+      queueTargets.length > 0 ? asyncWrites / queueTargets.length : 0;
+    const perSyncWrite =
+      directTargets.length > 0 ? syncWrites / directTargets.length : 0;
 
     for (const next of downstream) {
       const isReplica = typeOf[next] === 'postgresReplica';
-      const sendRead = readTargets.includes(next) ? perRead : 0;
-      const sendWrite = !isReplica && writeTargets.includes(next) ? perWrite : 0;
+      const isQueue = typeOf[next] === 'queue';
+      const sendRead =
+        (readTargets.includes(next) ? perReplicaSafeRead : 0) +
+        (!isReplica && writeTargets.includes(next) ? perReplicaUnsafeRead : 0);
+      let sendWrite = 0;
+      if (!isReplica && writeTargets.includes(next)) {
+        sendWrite = isQueue ? perAsyncWrite : perSyncWrite;
+      }
       if (sendRead === 0 && sendWrite === 0) continue;
       const key = edgeKey(id, next);
       edgeRps[key] = (edgeRps[key] ?? 0) + sendRead + sendWrite;
@@ -270,6 +314,62 @@ function avgQueryCostMix(state: SimState): QueryCostMix {
     read: rW > 0 ? rC / rW : DEFAULT_READ_QUERY_COST_MS,
     write: wW > 0 ? wC / wW : DEFAULT_WRITE_QUERY_COST_MS
   };
+}
+
+// Fraction of read RPS attributable to endpoints marked replicaSafe (default true).
+// 1.0 when no endpoints are declared, preserving legacy "all reads can go to replica".
+function replicaSafeReadFraction(state: SimState): number {
+  const endpoints = state.endpoints ?? [];
+  if (endpoints.length === 0) return 1;
+  let totalReadWeight = 0;
+  let safeReadWeight = 0;
+  for (const e of endpoints) {
+    if (e.query.type === 'write') continue;
+    totalReadWeight += e.weight;
+    if (e.replicaSafe !== false) safeReadWeight += e.weight;
+  }
+  return totalReadWeight > 0 ? safeReadWeight / totalReadWeight : 1;
+}
+
+// Fraction of write RPS attributable to endpoints marked async (default false).
+// 0 when no endpoints are declared, preserving legacy "writes go direct".
+function asyncWriteFraction(state: SimState): number {
+  const endpoints = state.endpoints ?? [];
+  if (endpoints.length === 0) return 0;
+  let totalWriteWeight = 0;
+  let asyncWriteWeight = 0;
+  for (const e of endpoints) {
+    if (e.query.type !== 'write') continue;
+    totalWriteWeight += e.weight;
+    if (e.async === true) asyncWriteWeight += e.weight;
+  }
+  return totalWriteWeight > 0 ? asyncWriteWeight / totalWriteWeight : 0;
+}
+
+function hasQueueWorkerPath(graph: SimGraph): boolean {
+  const typeOf: Record<string, NodeType> = {};
+  for (const n of graph.nodes) typeOf[n.id] = n.type;
+  for (const e of graph.edges) {
+    if (typeOf[e.source] !== 'queue' || typeOf[e.target] !== 'worker') continue;
+    const hasUpstream = graph.edges.some((up) => up.target === e.source);
+    if (hasUpstream) return true;
+  }
+  return false;
+}
+
+function computeTopologyErrors(state: SimState): string[] {
+  const errors: string[] = [];
+  const endpoints = state.endpoints ?? [];
+  const asyncEndpoints = endpoints.filter(
+    (e) => e.async === true && e.query.type === 'write'
+  );
+  if (asyncEndpoints.length > 0 && !hasQueueWorkerPath(state.graph)) {
+    const labels = asyncEndpoints.map((e) => `${e.method} ${e.route}`).join(', ');
+    errors.push(
+      `Async endpoint(s) ${labels} require a queue + worker path. Add a queue between API and the worker that writes to the DB.`
+    );
+  }
+  return errors;
 }
 
 const DEFAULT_CACHE_TTL_SECONDS = 60;
@@ -375,6 +475,38 @@ function computeCacheImpact(
   return { hitRateByRedisNodeId, cacheStaleReadPct };
 }
 
+// Derived hit rate per CDN node: weighted across edgeCacheable read endpoints
+// using the same skew/working-set/cache-bytes formula as Redis (issue 03).
+// Non-cacheable reads contribute 0 hit, dragging the effective node-level rate down.
+function computeCdnHitRates(state: SimState): Record<string, number> {
+  const endpoints = state.endpoints ?? [];
+  const tables: Record<string, Table | undefined> = {};
+  for (const t of state.tables ?? []) tables[t.name] = t;
+  const out: Record<string, number> = {};
+  if (endpoints.length === 0) return out;
+
+  for (const node of state.graph.nodes) {
+    if (node.type !== 'cdn') continue;
+    const tier = node.tier ?? 'S';
+    const instances = Math.max(1, node.instanceCount ?? 1);
+    const cacheBytes = CDN_TIER_MEMORY_BYTES[tier] * instances;
+
+    let totalReadWeight = 0;
+    let weightedHit = 0;
+    for (const e of endpoints) {
+      if (e.query.type === 'write') continue;
+      totalReadWeight += e.weight;
+      const cacheable = e.edgeCacheable !== false;
+      if (!cacheable) continue;
+      const table = tables[e.table];
+      const workingSet = table ? table.rowCount * table.avgRowSize : 0;
+      weightedHit += e.weight * derivedHitRate(workingSet, cacheBytes, e.skew);
+    }
+    out[node.id] = totalReadWeight > 0 ? weightedHit / totalReadWeight : 0;
+  }
+  return out;
+}
+
 function computePerNode(
   state: SimState,
   effects: IncidentEffects,
@@ -388,6 +520,7 @@ function computePerNode(
   const writeRps = effectiveRps - readRps;
   const costMix = avgQueryCostMix(state);
   const cacheImpact = computeCacheImpact(state, readRps, writeRps);
+  const cdnHitRateByNodeId = computeCdnHitRates(state);
   const flow = resolveFlow(
     state.graph,
     readRps,
@@ -395,7 +528,10 @@ function computePerNode(
     effects,
     prevDepths,
     dtMs,
-    cacheImpact.hitRateByRedisNodeId
+    cacheImpact.hitRateByRedisNodeId,
+    cdnHitRateByNodeId,
+    replicaSafeReadFraction(state),
+    asyncWriteFraction(state)
   );
   const perNodeUtilization: Record<string, number> = {};
   const perNodeLatency: Record<string, number> = {};
@@ -602,6 +738,7 @@ export function tick(
     queueDepthByNodeId: flow.queueDepths,
     queueArrivalRpsByNodeId: flow.queueArrivals,
     queueDepthMax,
+    topologyErrors: computeTopologyErrors(state),
     timestamp
   };
 }

@@ -178,12 +178,24 @@ export function EndpointsTab() {
 
             <div className="sc-endpoint__flags">
               <div className="sc-endpoint__flags-label">Retrofit flags</div>
-              <FlagRow label="replicaSafe" />
-              <FlagRow label="async" />
-              <FlagRow label="edgeCacheable" />
-              <div className="sc-endpoint__flags-note">
-                Not wired yet — see issues 11–13.
-              </div>
+              <FlagRow
+                label="replicaSafe"
+                value={e.replicaSafe ?? true}
+                readOnly={readOnly}
+                onChange={(v) => updateEndpoint(idx, { replicaSafe: v })}
+              />
+              <FlagRow
+                label="async"
+                value={e.async ?? false}
+                readOnly={readOnly || e.query.type !== 'write'}
+                onChange={(v) => updateEndpoint(idx, { async: v })}
+              />
+              <FlagRow
+                label="edgeCacheable"
+                value={e.edgeCacheable ?? e.query.type !== 'write'}
+                readOnly={readOnly || e.query.type === 'write'}
+                onChange={(v) => updateEndpoint(idx, { edgeCacheable: v })}
+              />
             </div>
           </section>
         );
@@ -192,11 +204,28 @@ export function EndpointsTab() {
   );
 }
 
-function FlagRow({ label }: { label: string }) {
+interface FlagRowProps {
+  label: string;
+  value: boolean;
+  readOnly?: boolean;
+  onChange?: (next: boolean) => void;
+}
+
+function FlagRow({ label, value, readOnly, onChange }: FlagRowProps) {
   return (
     <div className="sc-endpoint__flag">
       <span className="sc-endpoint__flag-label">{label}</span>
-      <span className="sc-endpoint__flag-value">—</span>
+      {readOnly || !onChange ? (
+        <span className="sc-endpoint__flag-value">{value ? 'on' : 'off'}</span>
+      ) : (
+        <input
+          type="checkbox"
+          className="sc-endpoint__flag-toggle"
+          aria-label={label}
+          checked={value}
+          onChange={(ev) => onChange(ev.target.checked)}
+        />
+      )}
     </div>
   );
 }

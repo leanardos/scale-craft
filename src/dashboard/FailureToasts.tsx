@@ -52,10 +52,23 @@ export function FailureToasts() {
         i.kind === 'regional-outage')
   );
 
-  if (saturated.length === 0 && activeNamed.length === 0) return null;
+  const topologyErrors = snapshot?.topologyErrors ?? [];
+
+  if (
+    saturated.length === 0 &&
+    activeNamed.length === 0 &&
+    topologyErrors.length === 0
+  )
+    return null;
 
   return (
     <div className="sc-toasts">
+      {topologyErrors.map((msg, i) => (
+        <div key={`topo-${i}`} className="sc-toast">
+          <span className="sc-toast__dot" />
+          <span className="sc-toast__msg">{msg}</span>
+        </div>
+      ))}
       {activeNamed.map((inc) => (
         <div key={`inc-${inc.kind}-${inc.startedAt}`} className="sc-toast">
           <span className="sc-toast__dot" />

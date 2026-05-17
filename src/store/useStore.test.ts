@@ -56,6 +56,7 @@ describe('store', () => {
       queueDepthByNodeId: {},
       queueArrivalRpsByNodeId: {},
       queueDepthMax: 0,
+      topologyErrors: [],
       timestamp: t
     });
     const total = HISTORY_MAX_SAMPLES + 200;
@@ -93,6 +94,7 @@ describe('store', () => {
         queueDepthByNodeId: {},
         queueArrivalRpsByNodeId: {},
         queueDepthMax: 0,
+        topologyErrors: [],
         timestamp: 0
       },
       history: [
@@ -179,6 +181,7 @@ describe('store', () => {
       queueDepthByNodeId: {},
       queueArrivalRpsByNodeId: {},
       queueDepthMax: 0,
+      topologyErrors: [],
       timestamp: t
     });
     const TICK_MS = 100;

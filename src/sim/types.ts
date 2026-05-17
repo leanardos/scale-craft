@@ -60,6 +60,7 @@ export interface Snapshot {
   queueDepthByNodeId: Record<string, number>;
   queueArrivalRpsByNodeId: Record<string, number>;
   queueDepthMax: number;
+  topologyErrors: string[];
   timestamp: number;
 }
 
@@ -122,4 +123,7 @@ export interface Endpoint {
   skew: Skew;
   weight: number;
   cache?: EndpointCacheConfig;
+  replicaSafe?: boolean;
+  async?: boolean;
+  edgeCacheable?: boolean;
 }

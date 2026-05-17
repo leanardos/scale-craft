@@ -13,6 +13,7 @@ import timelineSpec from '../missions/timeline-stale-reads.json';
 import surviveSpec from '../missions/survive-region-outage.json';
 import marathonSpec from '../missions/p95-marathon.json';
 import urlShortenerSpecRaw from '../missions/url-shortener-10k.json';
+import photoFeedSpecRaw from '../missions/photo-feed-10k.json';
 import { parseMission } from './mission';
 
 const TICK_MS = 100;
@@ -364,6 +365,101 @@ describe('mission calibration — url-shortener-10k (cache-hot-path mission)', (
   it('intended (cache absorbs reads) beats runner-up on p95', () => {
     const intended = simulateMission(spec, intendedGraph);
     const runner = simulateMission(spec, runnerUpGraph);
+    expect(intended.maxP95Ms).toBeLessThan(runner.maxP95Ms);
+  });
+});
+
+describe('mission calibration — photo-feed-10k (index + replica mission)', () => {
+  const baseSpec = parseMission(photoFeedSpecRaw);
+
+  function withUserIdIndexed(indexed: boolean): MissionSpec {
+    return {
+      ...baseSpec,
+      tables: baseSpec.tables!.map((t) =>
+        t.name !== 'photos'
+          ? t
+          : {
+              ...t,
+              columns: t.columns.map((c) =>
+                c.name === 'user_id' ? { ...c, indexed } : c
+              )
+            }
+      )
+    };
+  }
+
+  // Intended: INDEX(user_id) + replica. 100% reads route to replica
+  // (replicaSafe defaults to true) so primary is effectively idle.
+  const intendedSpec = withUserIdIndexed(true);
+  const intendedGraph: SimGraph = {
+    nodes: [
+      { id: 'c', type: 'client' },
+      { id: 'lb', type: 'lb' },
+      { id: 'a', type: 'api', instanceCount: 4, tier: 'M' },
+      { id: 'p', type: 'postgres', instanceCount: 1, tier: 'M' },
+      {
+        id: 'pr',
+        type: 'postgresReplica',
+        instanceCount: 8,
+        tier: 'L',
+        lagMs: 100
+      }
+    ],
+    edges: [
+      { source: 'c', target: 'lb' },
+      { source: 'lb', target: 'a' },
+      { source: 'a', target: 'p' },
+      { source: 'a', target: 'pr' }
+    ]
+  };
+
+  // Runner-up 1: Redis-L tries to absorb reads, but the 500GB working set
+  // dwarfs the cache and user_id is not indexed → rangeScan over 10M rows.
+  const noIndexRedisSpec = withUserIdIndexed(false);
+  const noIndexRedisGraph: SimGraph = {
+    nodes: [
+      { id: 'c', type: 'client' },
+      { id: 'a', type: 'api', instanceCount: 4, tier: 'M' },
+      { id: 'r', type: 'redis', instanceCount: 1, tier: 'L' },
+      { id: 'p', type: 'postgres', instanceCount: 1, tier: 'L' }
+    ],
+    edges: [
+      { source: 'c', target: 'a' },
+      { source: 'a', target: 'r' },
+      { source: 'r', target: 'p' }
+    ]
+  };
+
+  // Runner-up 2: INDEX(user_id) but no replica. Primary handles all reads.
+  const indexedNoReplicaSpec = withUserIdIndexed(true);
+  const indexedNoReplicaGraph: SimGraph = {
+    nodes: [
+      { id: 'c', type: 'client' },
+      { id: 'a', type: 'api', instanceCount: 4, tier: 'M' },
+      { id: 'p', type: 'postgres', instanceCount: 1, tier: 'L' }
+    ],
+    edges: [
+      { source: 'c', target: 'a' },
+      { source: 'a', target: 'p' }
+    ]
+  };
+
+  it('runner-up (Redis + no index) blows the p95 budget on a rangeScan workload', () => {
+    const runner = simulateMission(noIndexRedisSpec, noIndexRedisGraph);
+    expect(runner.maxP95Ms).toBeGreaterThan(
+      baseSpec.winConditions.p95MaxMs
+    );
+  });
+
+  it('intended (index + replica) beats Redis-no-index on p95 by a clear margin', () => {
+    const intended = simulateMission(intendedSpec, intendedGraph);
+    const runner = simulateMission(noIndexRedisSpec, noIndexRedisGraph);
+    expect(intended.maxP95Ms).toBeLessThan(runner.maxP95Ms);
+  });
+
+  it('intended (index + replica) beats indexed-no-replica on p95', () => {
+    const intended = simulateMission(intendedSpec, intendedGraph);
+    const runner = simulateMission(indexedNoReplicaSpec, indexedNoReplicaGraph);
     expect(intended.maxP95Ms).toBeLessThan(runner.maxP95Ms);
   });
 });

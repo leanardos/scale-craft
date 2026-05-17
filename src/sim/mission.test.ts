@@ -48,6 +48,7 @@ const winningSnap = (timestamp: number): Snapshot => ({
   queueDepthByNodeId: {},
   queueArrivalRpsByNodeId: {},
   queueDepthMax: 0,
+  topologyErrors: [],
   timestamp
 });
 
@@ -249,6 +250,7 @@ describe('mission v2 win predicates', () => {
     queueDepthByNodeId: {},
     queueArrivalRpsByNodeId: {},
     queueDepthMax: 0,
+    topologyErrors: [],
     timestamp: 0
   };
   const runtime = {
@@ -528,6 +530,251 @@ describe('parseMission: schema validation for indexes and byColumn', () => {
     });
     expect(m.endpoints![0].query.byColumn).toBe('user_id');
     expect(m.endpoints![0].query.type).toBe('pointIndexed');
+  });
+
+  it('endpoint.replicaSafe defaults to true when omitted', () => {
+    const m = parseMission({
+      id: 'p',
+      title: 't',
+      brief: 'b',
+      targetRps: 1,
+      rampSeconds: 1,
+      sustainSeconds: 1,
+      winConditions: { p95MaxMs: 1, errorMaxPct: 1, costMaxUsd: 1 },
+      allowedComponents: ['client'],
+      tables: [
+        {
+          name: 'x',
+          rowCount: 1,
+          avgRowSize: 1,
+          columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+        }
+      ],
+      endpoints: [
+        {
+          method: 'GET',
+          route: '/x',
+          table: 'x',
+          query: { type: 'pointIndexed', byColumn: 'id' },
+          responseSize: 1,
+          skew: 'flat',
+          weight: 1
+        }
+      ]
+    });
+    expect(m.endpoints![0].replicaSafe).toBe(true);
+  });
+
+  it('endpoint.replicaSafe round-trips false when set', () => {
+    const m = parseMission({
+      id: 'p',
+      title: 't',
+      brief: 'b',
+      targetRps: 1,
+      rampSeconds: 1,
+      sustainSeconds: 1,
+      winConditions: { p95MaxMs: 1, errorMaxPct: 1, costMaxUsd: 1 },
+      allowedComponents: ['client'],
+      tables: [
+        {
+          name: 'x',
+          rowCount: 1,
+          avgRowSize: 1,
+          columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+        }
+      ],
+      endpoints: [
+        {
+          method: 'GET',
+          route: '/x',
+          table: 'x',
+          query: { type: 'pointIndexed', byColumn: 'id' },
+          responseSize: 1,
+          skew: 'flat',
+          weight: 1,
+          replicaSafe: false
+        }
+      ]
+    });
+    expect(m.endpoints![0].replicaSafe).toBe(false);
+  });
+
+  it('endpoint.async defaults to false when omitted', () => {
+    const m = parseMission({
+      id: 'p',
+      title: 't',
+      brief: 'b',
+      targetRps: 1,
+      rampSeconds: 1,
+      sustainSeconds: 1,
+      winConditions: { p95MaxMs: 1, errorMaxPct: 1, costMaxUsd: 1 },
+      allowedComponents: ['client'],
+      tables: [
+        {
+          name: 'x',
+          rowCount: 1,
+          avgRowSize: 1,
+          columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+        }
+      ],
+      endpoints: [
+        {
+          method: 'POST',
+          route: '/x',
+          table: 'x',
+          query: { type: 'write' },
+          responseSize: 0,
+          skew: 'flat',
+          weight: 1
+        }
+      ]
+    });
+    expect(m.endpoints![0].async).toBe(false);
+  });
+
+  it('endpoint.edgeCacheable defaults to true for reads, false for writes', () => {
+    const m = parseMission({
+      id: 'p',
+      title: 't',
+      brief: 'b',
+      targetRps: 1,
+      rampSeconds: 1,
+      sustainSeconds: 1,
+      winConditions: { p95MaxMs: 1, errorMaxPct: 1, costMaxUsd: 1 },
+      allowedComponents: ['client'],
+      tables: [
+        {
+          name: 'x',
+          rowCount: 1,
+          avgRowSize: 1,
+          columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+        }
+      ],
+      endpoints: [
+        {
+          method: 'GET',
+          route: '/r',
+          table: 'x',
+          query: { type: 'pointIndexed', byColumn: 'id' },
+          responseSize: 1,
+          skew: 'flat',
+          weight: 1
+        },
+        {
+          method: 'POST',
+          route: '/w',
+          table: 'x',
+          query: { type: 'write' },
+          responseSize: 0,
+          skew: 'flat',
+          weight: 1
+        }
+      ]
+    });
+    expect(m.endpoints![0].edgeCacheable).toBe(true);
+    expect(m.endpoints![1].edgeCacheable).toBe(false);
+  });
+
+  it('rejects edgeCacheable: true on a write endpoint', () => {
+    const bad = {
+      id: 'p',
+      title: 't',
+      brief: 'b',
+      targetRps: 1,
+      rampSeconds: 1,
+      sustainSeconds: 1,
+      winConditions: { p95MaxMs: 1, errorMaxPct: 1, costMaxUsd: 1 },
+      allowedComponents: ['client'],
+      tables: [
+        {
+          name: 'x',
+          rowCount: 1,
+          avgRowSize: 1,
+          columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+        }
+      ],
+      endpoints: [
+        {
+          method: 'POST',
+          route: '/w',
+          table: 'x',
+          query: { type: 'write' },
+          responseSize: 0,
+          skew: 'flat',
+          weight: 1,
+          edgeCacheable: true
+        }
+      ]
+    };
+    expect(() => parseMission(bad)).toThrow(/edgeCacheable/i);
+  });
+
+  it('rejects async: true on a non-write endpoint', () => {
+    const bad = {
+      id: 'p',
+      title: 't',
+      brief: 'b',
+      targetRps: 1,
+      rampSeconds: 1,
+      sustainSeconds: 1,
+      winConditions: { p95MaxMs: 1, errorMaxPct: 1, costMaxUsd: 1 },
+      allowedComponents: ['client'],
+      tables: [
+        {
+          name: 'x',
+          rowCount: 1,
+          avgRowSize: 1,
+          columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+        }
+      ],
+      endpoints: [
+        {
+          method: 'GET',
+          route: '/x',
+          table: 'x',
+          query: { type: 'pointIndexed', byColumn: 'id' },
+          responseSize: 1,
+          skew: 'flat',
+          weight: 1,
+          async: true
+        }
+      ]
+    };
+    expect(() => parseMission(bad)).toThrow(/async.*write/i);
+  });
+
+  it('rejects non-boolean replicaSafe', () => {
+    const bad = {
+      id: 'p',
+      title: 't',
+      brief: 'b',
+      targetRps: 1,
+      rampSeconds: 1,
+      sustainSeconds: 1,
+      winConditions: { p95MaxMs: 1, errorMaxPct: 1, costMaxUsd: 1 },
+      allowedComponents: ['client'],
+      tables: [
+        {
+          name: 'x',
+          rowCount: 1,
+          avgRowSize: 1,
+          columns: [{ name: 'id', type: 'int', indexed: true, primaryKey: true }]
+        }
+      ],
+      endpoints: [
+        {
+          method: 'GET',
+          route: '/x',
+          table: 'x',
+          query: { type: 'pointIndexed', byColumn: 'id' },
+          responseSize: 1,
+          skew: 'flat',
+          weight: 1,
+          replicaSafe: 'yes'
+        }
+      ]
+    };
+    expect(() => parseMission(bad)).toThrow(/replicaSafe/);
   });
 
   it('rejects endpoint whose byColumn does not exist on the referenced table', () => {

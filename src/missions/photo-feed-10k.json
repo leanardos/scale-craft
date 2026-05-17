@@ -1,0 +1,36 @@
+{
+  "id": "photo-feed-10k",
+  "title": "Photo feed: 10,000 RPS",
+  "brief": "Serve 10,000 RPS against a 10M-row × 50KB photos table — a 500GB working set. Redis can't help (no cache will hold it). The lever is INDEX(user_id) plus a read replica for capacity. p95 < 150ms, errors < 0.1%, budget $1,000/mo.",
+  "targetRps": 10000,
+  "readPct": 100,
+  "rampSeconds": 30,
+  "sustainSeconds": 60,
+  "winConditions": { "p95MaxMs": 150, "errorMaxPct": 0.1, "costMaxUsd": 1000 },
+  "requiredComponents": ["postgres"],
+  "allowedComponents": ["client", "lb", "api", "redis", "postgres", "postgresReplica"],
+  "tables": [
+    {
+      "name": "photos",
+      "rowCount": 10000000,
+      "avgRowSize": 50000,
+      "columns": [
+        { "name": "id", "type": "uuid", "indexed": true, "primaryKey": true },
+        { "name": "user_id", "type": "uuid", "indexed": false },
+        { "name": "url", "type": "string", "indexed": false },
+        { "name": "created_at", "type": "timestamp", "indexed": false }
+      ]
+    }
+  ],
+  "endpoints": [
+    {
+      "method": "GET",
+      "route": "/photos",
+      "table": "photos",
+      "query": { "type": "rangeIndexed", "byColumn": "user_id" },
+      "responseSize": 500000,
+      "skew": "medium",
+      "weight": 1
+    }
+  ]
+}

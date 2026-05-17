@@ -17,7 +17,6 @@ import {
   Tier,
   DEFAULT_REPLICATION_LAG_MS,
   DEFAULT_READ_KEY_CARDINALITY,
-  CDN_DEFAULT_HIT_RATE,
   CDN_MAX_HIT_RATE
 } from '../sim/specs';
 import { edgeKey } from '../sim/types';
@@ -266,7 +265,11 @@ function NodeInspector({ id }: { id: string }) {
           <div className="sc-inspector__section-label">Edge cache</div>
           <div className="sc-inspector__field">
             <label className="sc-inspector__field-label" htmlFor={`hit-${id}`}>
-              Hit rate ({Math.round((node.data.hitRate ?? CDN_DEFAULT_HIT_RATE) * 100)}%)
+              Hit rate override (
+              {node.data.hitRate === undefined
+                ? 'auto'
+                : `${Math.round(node.data.hitRate * 100)}%`}
+              )
             </label>
             <input
               id={`hit-${id}`}
@@ -275,9 +278,7 @@ function NodeInspector({ id }: { id: string }) {
               min={0}
               max={Math.round(CDN_MAX_HIT_RATE * 100)}
               step={1}
-              value={Math.round(
-                (node.data.hitRate ?? CDN_DEFAULT_HIT_RATE) * 100
-              )}
+              value={Math.round((node.data.hitRate ?? 0) * 100)}
               onChange={(e) => setHitRate(id, Number(e.target.value) / 100)}
             />
           </div>

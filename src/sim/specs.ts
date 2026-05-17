@@ -70,6 +70,15 @@ export const REDIS_TIER_MEMORY_BYTES: Record<Tier, number> = {
   XL: 64_000_000_000
 };
 
+// Per-instance CDN edge memory by tier (decimal GB). Edge caches typically hold
+// far more than a Redis tier — final numbers land in issue 15 calibration.
+export const CDN_TIER_MEMORY_BYTES: Record<Tier, number> = {
+  S: 10_000_000_000,
+  M: 40_000_000_000,
+  L: 160_000_000_000,
+  XL: 640_000_000_000
+};
+
 // Pareto-style hit-rate curve. f = cacheBytes / workingSet; hitRate = f^α.
 // α is small for heavy skew (top-1% serves ~90%) and 1 for flat (uniform).
 const SKEW_EXPONENT: Record<Skew, number> = {
@@ -166,7 +175,6 @@ export const NODE_SPECS: Record<NodeType, NodeSpec> = {
   }
 };
 
-export const CDN_DEFAULT_HIT_RATE = 0.6;
 export const CDN_MAX_HIT_RATE = 0.95;
 
 export const QUEUE_CAPACITY = NODE_SPECS.queue.capacity;

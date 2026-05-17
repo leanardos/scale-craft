@@ -152,6 +152,31 @@ function parseEndpoint(
     throw new Error(`endpoint ${method} ${route}: weight must be a non-negative number`);
   }
   const cache = parseCacheConfig(raw.cache, `${method} ${route}`);
+  const replicaSafe = parseOptionalBool(
+    raw.replicaSafe,
+    `endpoint ${method} ${route}: replicaSafe`,
+    true
+  );
+  const asyncFlag = parseOptionalBool(
+    raw.async,
+    `endpoint ${method} ${route}: async`,
+    false
+  );
+  if (asyncFlag && qType !== 'write') {
+    throw new Error(
+      `endpoint ${method} ${route}: async is only valid on write endpoints`
+    );
+  }
+  const edgeCacheable = parseOptionalBool(
+    raw.edgeCacheable,
+    `endpoint ${method} ${route}: edgeCacheable`,
+    qType !== 'write'
+  );
+  if (edgeCacheable && qType === 'write') {
+    throw new Error(
+      `endpoint ${method} ${route}: edgeCacheable cannot be true on write endpoints`
+    );
+  }
   return {
     method,
     route,
@@ -163,8 +188,21 @@ function parseEndpoint(
     responseSize,
     skew: skew as Skew,
     weight,
-    cache
+    cache,
+    replicaSafe,
+    async: asyncFlag,
+    edgeCacheable
   };
+}
+
+function parseOptionalBool(
+  raw: unknown,
+  ctx: string,
+  defaultValue: boolean
+): boolean {
+  if (raw === undefined) return defaultValue;
+  if (typeof raw !== 'boolean') throw new Error(`${ctx} must be boolean`);
+  return raw;
 }
 
 const CACHE_MODES: CacheMode[] = ['invalidate', 'ttl'];

@@ -1,6 +1,7 @@
 import { MissionSpec, parseMission } from '../sim/mission';
 import userService1k from './user-service-1k.json';
 import urlShortener10k from './url-shortener-10k.json';
+import photoFeed10k from './photo-feed-10k.json';
 import orders5kWrites from './orders-5k-writes.json';
 import ingest100kBurst from './ingest-100k-burst.json';
 import timelineStaleReads from './timeline-stale-reads.json';
@@ -10,6 +11,7 @@ import p95Marathon from './p95-marathon.json';
 export const MISSIONS: MissionSpec[] = [
   userService1k,
   urlShortener10k,
+  photoFeed10k,
   orders5kWrites,
   ingest100kBurst,
   timelineStaleReads,

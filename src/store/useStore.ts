@@ -12,7 +12,6 @@ import {
   Tier,
   DEFAULT_REPLICATION_LAG_MS,
   DEFAULT_READ_KEY_CARDINALITY,
-  CDN_DEFAULT_HIT_RATE,
   CDN_MAX_HIT_RATE
 } from '../sim/specs';
 import { Incident, IncidentKind, totalDurationMs } from '../sim/incidents';
@@ -553,9 +552,8 @@ export const useStore = create<AppState>((set, get) => ({
       data.lagMs = DEFAULT_REPLICATION_LAG_MS;
       data.readKeyCardinality = DEFAULT_READ_KEY_CARDINALITY;
     }
-    if (type === 'cdn') {
-      data.hitRate = CDN_DEFAULT_HIT_RATE;
-    }
+    // CDN: hitRate is undefined by default — sim derives it per-endpoint.
+    // Slider in Inspector lets the user override.
     set({
       nodes: [...get().nodes, { id, type, position, data }]
     });
