@@ -1,0 +1,24 @@
+{
+  "id": "survive-region-outage",
+  "title": "Survive a regional outage",
+  "brief": "Sustain 1,000 RPS through a 30s regional outage hitting region 'eu' at t=30s into sustain. Availability ≥ 99.9% required. Budget: $1,500/mo.",
+  "targetRps": 1000,
+  "readPct": 90,
+  "rampSeconds": 15,
+  "sustainSeconds": 90,
+  "winConditions": { "p95MaxMs": 300, "errorMaxPct": 5, "costMaxUsd": 1500 },
+  "availabilityMin": 0.999,
+  "customWinPredicateId": "survive-region-outage",
+  "incidentSchedule": [
+    { "atMs": 30000, "kind": "regional-outage", "regionId": "eu" }
+  ],
+  "allowedComponents": [
+    "client",
+    "lb",
+    "api",
+    "redis",
+    "postgres",
+    "postgresReplica",
+    "cdn"
+  ]
+}

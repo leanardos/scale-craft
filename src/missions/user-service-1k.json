@@ -1,0 +1,10 @@
+{
+  "id": "user-service-1k",
+  "title": "Build a user service",
+  "brief": "Handle 1,000 RPS reads with p95 < 200ms and errors < 1%. Budget: $500/mo.",
+  "targetRps": 1000,
+  "rampSeconds": 20,
+  "sustainSeconds": 30,
+  "winConditions": { "p95MaxMs": 200, "errorMaxPct": 1, "costMaxUsd": 500 },
+  "allowedComponents": ["client", "api", "redis", "postgres"]
+}

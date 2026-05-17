@@ -1,0 +1,14 @@
+{
+  "id": "timeline-stale-reads",
+  "title": "Timeline: 10k reads, 200 writes",
+  "brief": "Sustain 10,200 RPS at 98% reads with p95 < 150ms, errors < 1%, and stale-read rate < 5%. Budget: $700/mo.",
+  "targetRps": 10200,
+  "readPct": 98,
+  "rampSeconds": 20,
+  "sustainSeconds": 60,
+  "winConditions": { "p95MaxMs": 150, "errorMaxPct": 1, "costMaxUsd": 700 },
+  "writeMaxStaleReadPct": 5,
+  "customWinPredicateId": "stale-read-budget",
+  "requiredComponents": ["postgresReplica"],
+  "allowedComponents": ["client", "lb", "api", "redis", "postgres", "postgresReplica"]
+}

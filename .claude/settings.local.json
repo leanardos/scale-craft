@@ -1,0 +1,22 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm install *)",
+      "Bash(npx vitest *)",
+      "Bash(npx tsc *)",
+      "Bash(npx vite *)",
+      "Bash(curl -sf http://localhost:5173/ -o /dev/null)",
+      "Bash(curl *)",
+      "Bash(kill %1)",
+      "Bash(pkill -f \"vite --port 5173\")",
+      "Bash(npm test *)",
+      "Bash(npm run *)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(echo \"exit: $?\")",
+      "Bash(grep -E \"^\\(jsdom|happy-dom\\)$\")",
+      "Bash(echo \"tsc=$?\")",
+      "Bash(echo \"EXIT=$?\")",
+      "Bash(pkill -f \"vite --port 5180\")"
+    ]
+  }
+}

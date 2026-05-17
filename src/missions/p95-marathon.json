@@ -1,0 +1,21 @@
+{
+  "id": "p95-marathon",
+  "title": "p95 marathon (5 min)",
+  "brief": "Variable load 500→3000→500 RPS over 5 min. Sustain p95 < 100ms with errors < 1%. Budget: $900/mo.",
+  "targetRps": 3000,
+  "readPct": 95,
+  "rampSeconds": 10,
+  "sustainSeconds": 300,
+  "winConditions": { "p95MaxMs": 100, "errorMaxPct": 1, "costMaxUsd": 900 },
+  "loadProfileId": "p95-marathon",
+  "customWinPredicateId": "p95-marathon",
+  "allowedComponents": [
+    "client",
+    "cdn",
+    "lb",
+    "api",
+    "redis",
+    "postgres",
+    "postgresReplica"
+  ]
+}

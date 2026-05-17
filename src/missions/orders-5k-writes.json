@@ -1,0 +1,12 @@
+{
+  "id": "orders-5k-writes",
+  "title": "Orders: 5,000 writes/sec",
+  "brief": "Sustain 5,000 writes/s with p95 < 250ms and errors < 1%. No reads — caching cannot help. Budget: $1,200/mo.",
+  "targetRps": 5000,
+  "readPct": 0,
+  "rampSeconds": 30,
+  "sustainSeconds": 60,
+  "winConditions": { "p95MaxMs": 250, "errorMaxPct": 1, "costMaxUsd": 1200 },
+  "requiredComponents": ["postgres"],
+  "allowedComponents": ["client", "lb", "api", "postgres"]
+}
